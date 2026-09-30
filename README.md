@@ -18,7 +18,8 @@ SDK 应保持同一版本，并确认板端已切换为 `BIG_LITTLE`（2+1）VNP
 
 ### 1. 准备开发机
 
-安装 Git、CMake、AArch64 交叉编译器及 ARM64 ALSA 开发包：
+安装 Git、CMake、AArch64 交叉编译器及 ARM64 ALSA 开发包。下面是 Ubuntu/Debian
+Multi-Arch 的便捷方案：
 
 ```bash
 sudo dpkg --add-architecture arm64
@@ -39,9 +40,49 @@ cmake --version
 dpkg -L libasound2-dev:arm64 | grep '/libasound\.so$'
 ```
 
+交叉编译成功不代表产物一定与板端 C/C++ 运行库兼容。这里需要分别匹配两套内容：
+
+- `AX650_SDK_ROOT` 中的 AX 头文件和动态库必须匹配板端固件/驱动版本；
+- 交叉编译器和 sysroot 必须匹配板端用户态的 glibc、libstdc++ 和 ALSA ABI。
+
+先在板端检查实际环境，不要仅根据开发机发行版或 BSP 仓库名称推断：
+
+```bash
+uname -a
+cat /etc/os-release
+gcc --version | head -n 1
+getconf GNU_LIBC_VERSION
+dpkg-query -W libc6 libstdc++6 libasound2 2>/dev/null
+strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 \
+  | grep -oE 'GLIBCXX_[0-9.]+' | sort -Vu | tail -n 1
+cat /proc/ax_proc/version 2>/dev/null
+readelf -p .comment /soc/lib/libax_engine.so 2>/dev/null
+```
+
+当前已验证的一块 AX650N 板卡环境为 Ubuntu 22.04、GCC 11.4、glibc 2.35、
+`GLIBCXX_3.4.30`、ALSA 1.2.6.1 和 AX 驱动/固件 V3.10.2。其内核与 AX Engine 库由
+Arm GNU Toolchain 9.2.1 编译，但应用程序应使用与 Ubuntu 22.04 用户态兼容的 GCC 11
+交叉工具链和 Jammy ARM64 sysroot。最终产物的 `GLIBC_*`/`GLIBCXX_*` 要求不能高于
+板端提供的版本。
+
+AX650N BSP SDK `v1.45.0_p39` 自带 README 推荐 Arm GNU Toolchain 9.2-2019.12；该建议
+适用于与它配套的 BSP/固件，不能据此假定其 `msp/out` 动态库与更高版本板端固件兼容。
+
+确认板端确实与 `v1.45.0_p39` 配套时，按该 BSP 的说明安装工具链：
+
+```bash
+mkdir -p "$HOME/opt"
+wget https://developer.arm.com/-/media/Files/downloads/gnu-a/9.2-2019.12/binrel/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu.tar.xz
+tar -xJf gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu.tar.xz -C "$HOME/opt"
+export PATH="$HOME/opt/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/bin:$PATH"
+```
+
 如果开发机发行版不支持 Multi-Arch，也可使用与板端匹配的 AArch64 sysroot；其中必须
-包含 `alsa/asoundlib.h` 和 ARM64 `libasound.so`，编译时分别通过
-`ALSA_INCLUDE_DIR`、`ALSA_LIBRARY` 指定。
+包含 `alsa/asoundlib.h` 和 ARM64 `libasound.so`。标准 sysroot 的 `usr/include`、
+`usr/lib/aarch64-linux-gnu` 等常见布局会被自动识别；非标准布局可分别通过
+`ALSA_INCLUDE_DIR`、`ALSA_LIBRARY` 指定。工具链被解包到用户目录且不能自动定位其
+sysroot 时，再设置 `CROSS_SYSROOT`，构建脚本会向直接编译和全部 CMake 子构建传递
+`--sysroot`。
 
 安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)；它用于配置页面和运行
 状态页面，不参与 C++ 交叉编译：
@@ -86,6 +127,21 @@ export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
 test -d "$AX650_SDK_ROOT/include" && test -d "$AX650_SDK_ROOT/lib"
 ```
 
+如果板端将配套头文件和运行库安装在 `/soc/include`、`/soc/lib`，可直接同步一份用于
+链接，避免误用其他固件版本的公开 BSP。下列操作不会修改板端；执行前将示例 IP 替换
+为实际地址：
+
+```bash
+mkdir -p "$HOME/opt/ax650-board-sdk"
+ssh root@192.168.1.100 'tar -C /soc -cf - include lib' \
+  | tar -C "$HOME/opt/ax650-board-sdk" -xf -
+export AX650_SDK_ROOT="$HOME/opt/ax650-board-sdk"
+
+# 至少对比三个核心库；本地和板端结果必须一致。
+sha256sum "$AX650_SDK_ROOT"/lib/libax_{engine,interpreter,sys}.so
+ssh root@192.168.1.100 'sha256sum /soc/lib/libax_{engine,interpreter,sys}.so'
+```
+
 ### 3. 交叉编译
 
 使用明确的 SDK 和 ARM64 ALSA 库路径执行整体构建：
@@ -99,6 +155,28 @@ CXX=aarch64-linux-gnu-g++ \
 ./scripts/build.sh
 ```
 
+使用板端配套工具链/sysroot 时，命令形式如下；编译器名称以实际工具链为准：
+
+```bash
+export PATH="$HOME/opt/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/bin:$PATH"
+export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+export CROSS_SYSROOT=/path/to/aarch64-sysroot
+# ALSA_SYSROOT 默认继承 CROSS_SYSROOT；也可单独指向另一个含 ALSA 的 sysroot。
+CC=aarch64-none-linux-gnu-gcc \
+CXX=aarch64-none-linux-gnu-g++ \
+./scripts/build.sh
+```
+
+Ubuntu 22.04/GCC 11 板端对应的命令形式为：
+
+```bash
+export AX650_SDK_ROOT=/path/to/sdk-synced-from-board-soc
+export CROSS_SYSROOT=/path/to/ubuntu-jammy-arm64-sysroot
+CC=aarch64-linux-gnu-gcc-11 \
+CXX=aarch64-linux-gnu-g++-11 \
+./scripts/build.sh
+```
+
 构建结束后确认五个生产产物齐全，且可执行文件均为 AArch64：
 
 ```bash
@@ -108,6 +186,18 @@ test -f build/libfastenhance.so
 test -x build/qwen3-worker
 test -x build/hojo-tts-resident
 file build/audio-pipeline build/run-alsa-apm build/qwen3-worker build/hojo-tts-resident
+```
+
+部署前还应检查运行库版本要求。下面输出中的最高版本不能高于板端提供的版本：
+
+```bash
+readelf --version-info build/audio-pipeline | grep -oE 'GLIBC(X{2})?_[0-9.]+' | sort -Vu
+readelf --version-info build/qwen3-worker | grep -oE 'GLIBC(X{2})?_[0-9.]+' | sort -Vu
+
+# 在 AX650 板端执行
+getconf GNU_LIBC_VERSION
+strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 2>/dev/null \
+  | grep -oE 'GLIBCXX_[0-9.]+' | sort -Vu | tail -n 1
 ```
 
 若 `build.sh` 显示 `skipped run-alsa-apm`，说明 ALSA 头文件或 `ALSA_LIBRARY` 不正确；
@@ -318,13 +408,16 @@ arecord -D hw:2,0 -f S16_LE -r 48000 -c 1 -d 3 /tmp/uac-test.wav
 
 ### 主机侧准备
 
-- Linux 主机和 AArch64 交叉编译器（默认 `aarch64-linux-gnu-g++`）。
-- 目标板 sysroot 中的 ALSA 头文件和 `libasound.so`，用于生成 `run-alsa-apm`。
+- Linux 主机、CMake、Make 和与板端固件 ABI 匹配的 AArch64 交叉编译器（脚本默认
+  名称为 `aarch64-linux-gnu-g++`；AX650N BSP `v1.45.0_p39` 推荐 GCC 9.2-2019.12）。
+- 目标板 sysroot 中的 ALSA 头文件和 ARM64 `libasound.so`，用于生成
+  `run-alsa-apm`；不能链接开发机的 x86_64 ALSA 库。
 - AX650 Board SDK（包含 `include/`、`lib/`），用于生成 FastEnhance、Qwen3 和
   Hojo 运行组件。
 
 APM 预编译库已位于 `driver/apm`。没有 ALSA sysroot 时，构建脚本会跳过
-`run-alsa-apm`，但仍可生成不依赖 ALSA 的目标；板端实时运行必须补齐该目标。
+`run-alsa-apm`；没有有效 `AX650_SDK_ROOT` 时会跳过 AX650 运行组件。两种情况都只是
+部分构建，不能视为完整实时链路编译成功。
 
 ### Hojo 专用 ax-llm（强制版本）
 
@@ -377,13 +470,19 @@ git -C driver/tts/hojo/third_party/ax-llm status --short
 ```bash
 cd ax-audio-sdk
 
-# 指定交叉编译器
-CXX=aarch64-linux-gnu-g++ ./scripts/build.sh
-
-# 推荐显式指定板端 SDK 和 ALSA sysroot
+# 推荐显式指定板端 SDK、完整 sysroot 和 C/C++ 编译器；版本以板端用户态为准
 AX650_SDK_ROOT=/path/to/ax650-board-sdk \
-ALSA_SYSROOT=/path/to/aarch64-sysroot \
-CXX=aarch64-linux-gnu-g++ ./scripts/build.sh
+CROSS_SYSROOT=/path/to/aarch64-sysroot \
+CC=aarch64-linux-gnu-gcc-11 \
+CXX=aarch64-linux-gnu-g++-11 \
+./scripts/build.sh
+
+# 若编译器自带且能自动定位 sysroot，只需另行提供 ALSA sysroot
+AX650_SDK_ROOT=/path/to/ax650-board-sdk \
+ALSA_SYSROOT=/path/to/aarch64-sysroot-with-alsa \
+CC=aarch64-none-linux-gnu-gcc \
+CXX=aarch64-none-linux-gnu-g++ \
+./scripts/build.sh
 ```
 
 构建成功后通常应有：
@@ -398,6 +497,7 @@ FastEnhance 也可以单独重建：
 
 ```bash
 AX650_SDK_ROOT=/path/to/ax650-board-sdk \
+CROSS_SYSROOT=/path/to/aarch64-sysroot \
 CXX=aarch64-linux-gnu-g++ ./driver/ns/build-fastenhance.sh
 ```
 

@@ -19,6 +19,18 @@ if [[ -z "${CXX_PATH}" || -z "${CC_PATH}" ]]; then
     echo "Cross compiler not found: CC=${CC}, CXX=${CXX}" >&2
     exit 1
 fi
+CROSS_SYSROOT="${CROSS_SYSROOT:-}"
+CROSS_FLAGS=()
+CMAKE_SYSROOT_ARGS=()
+if [[ -n "${CROSS_SYSROOT}" ]]; then
+    if [[ ! -d "${CROSS_SYSROOT}" ]]; then
+        echo "CROSS_SYSROOT is not a directory: ${CROSS_SYSROOT}" >&2
+        exit 1
+    fi
+    CROSS_SYSROOT="$(cd "${CROSS_SYSROOT}" && pwd)"
+    CROSS_FLAGS+=("--sysroot=${CROSS_SYSROOT}")
+    CMAKE_SYSROOT_ARGS+=("-DCMAKE_SYSROOT=${CROSS_SYSROOT}")
+fi
 
 # 头文件与库路径
 APM_DIR="${SDK_DIR}/driver/apm"
@@ -27,11 +39,12 @@ INCLUDE_DIRS=(
     "-I${APM_DIR}/include/webrtc-audio-processing-2"
 )
 LIB_DIR="${APM_DIR}/lib"
-ALSA_SYSROOT="${ALSA_SYSROOT:-}"
-ALSA_LIBRARY="${ALSA_LIBRARY:-/data/wangzizhen/tmp/fastenhance-sysroot/lib/libasound.so.2}"
+ALSA_SYSROOT="${ALSA_SYSROOT:-${CROSS_SYSROOT}}"
+ALSA_INCLUDE_DIR="${ALSA_INCLUDE_DIR:-}"
+ALSA_LIBRARY="${ALSA_LIBRARY:-}"
 mkdir -p "${BUILD_DIR}"
 
-AX650_SDK_ROOT="${AX650_SDK_ROOT:-/data/wangzizhen/workspce/ten_vad/ax650/compile/board_sdk}"
+AX650_SDK_ROOT="${AX650_SDK_ROOT:-}"
 CAMPPLUS_SRC="${SDK_DIR}/driver/campplus"
 CAMPPLUS_EXTRA=()
 CAMPPLUS_LIBS=()
@@ -47,6 +60,7 @@ if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
     fi
     cmake -S "${KNF_ROOT}/kaldi-native-fbank-1.22.3" -B "${BUILD_DIR}/campplus-knf" \
         -DCMAKE_CXX_COMPILER="${CXX}" -DCMAKE_C_COMPILER="${CC}" \
+        "${CMAKE_SYSROOT_ARGS[@]}" \
         -DBUILD_SHARED_LIBS=OFF -DKALDI_NATIVE_FBANK_BUILD_TESTS=OFF \
         -DKALDI_NATIVE_FBANK_BUILD_PYTHON=OFF -DKALDI_NATIVE_FBANK_ENABLE_CHECK=OFF >/dev/null
     cmake --build "${BUILD_DIR}/campplus-knf" --target kaldi-native-fbank-core -j2
@@ -59,7 +73,7 @@ fi
 # Native C++ runtime for the target board.  It parses sdk-config.yaml and
 # owns the complete audio/VAD/ASR/MP3 pipeline; Python is only used by the
 # optional Gradio configuration pages.
-"${CXX}" -std=c++17 -O2 \
+"${CXX}" "${CROSS_FLAGS[@]}" -std=c++17 -O2 \
     -I"${SDK_DIR}/framework" -I"${SDK_DIR}/framework/configui" \
     -I"${SDK_DIR}/driver/ns/include" -I"${SDK_DIR}/driver/vad/include" -I"${SDK_DIR}/driver/asr/sensevoice/include" "${CAMPPLUS_EXTRA[@]}" \
     "${SDK_DIR}/framework/audio_pipeline.cpp" \
@@ -69,12 +83,32 @@ fi
     -o "${BUILD_DIR}/audio-pipeline"
 echo "Build done: ${BUILD_DIR}/audio-pipeline"
 
-ALSA_INCLUDE_DIR="${ALSA_INCLUDE_DIR:-/usr/include}"
 if [[ -n "${ALSA_SYSROOT}" && -d "${ALSA_SYSROOT}" ]]; then
-    ALSA_INCLUDE_DIR="${ALSA_SYSROOT}/include"
+    if [[ -z "${ALSA_INCLUDE_DIR}" ]]; then
+        for candidate in "${ALSA_SYSROOT}/usr/include" "${ALSA_SYSROOT}/include"; do
+            if [[ -r "${candidate}/alsa/asoundlib.h" ]]; then
+                ALSA_INCLUDE_DIR="${candidate}"
+                break
+            fi
+        done
+    fi
+    if [[ -z "${ALSA_LIBRARY}" ]]; then
+        for candidate in \
+            "${ALSA_SYSROOT}/usr/lib/aarch64-linux-gnu/libasound.so" \
+            "${ALSA_SYSROOT}/lib/aarch64-linux-gnu/libasound.so" \
+            "${ALSA_SYSROOT}/usr/lib/libasound.so" \
+            "${ALSA_SYSROOT}/lib/libasound.so"; do
+            if [[ -r "${candidate}" ]]; then
+                ALSA_LIBRARY="${candidate}"
+                break
+            fi
+        done
+    fi
 fi
+ALSA_INCLUDE_DIR="${ALSA_INCLUDE_DIR:-/usr/include}"
+ALSA_LIBRARY="${ALSA_LIBRARY:-/usr/lib/aarch64-linux-gnu/libasound.so}"
 if [[ -r "${ALSA_INCLUDE_DIR}/alsa/asoundlib.h" && -r "${ALSA_LIBRARY}" ]]; then
-    "${CXX}" -std=c++17 -O2 \
+    "${CXX}" "${CROSS_FLAGS[@]}" -std=c++17 -O2 \
         "${INCLUDE_DIRS[@]}" -I"${ALSA_INCLUDE_DIR}" \
         -I"${SDK_DIR}/driver/alsa_briage" -I"${SDK_DIR}/framework" -I"${SDK_DIR}/framework/configui" \
         -DWEBRTC_LIBRARY_IMPL -DWEBRTC_POSIX \
@@ -91,7 +125,7 @@ else
 fi
 
 if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
-    AX650_SDK_ROOT="${AX650_SDK_ROOT}" CXX="${CXX}" \
+    AX650_SDK_ROOT="${AX650_SDK_ROOT}" CROSS_SYSROOT="${CROSS_SYSROOT}" CXX="${CXX}" \
         "${SDK_DIR}/driver/ns/build-fastenhance.sh"
 
     # Qwen3 runs as a persistent subprocess.  Keeping it in a separate
@@ -100,6 +134,7 @@ if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
     cmake -S "${SDK_DIR}/driver/llm" -B "${QWEN_BUILD_DIR}" \
         -DCMAKE_TOOLCHAIN_FILE="${SDK_DIR}/driver/llm/toolchains/ax650-aarch64.cmake" \
         -DCMAKE_C_COMPILER="${CC_PATH}" -DCMAKE_CXX_COMPILER="${CXX_PATH}" \
+        "${CMAKE_SYSROOT_ARGS[@]}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="${BUILD_DIR}" \
         -DAX650_SDK_DIR="${AX650_SDK_ROOT}"
@@ -110,6 +145,7 @@ if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
     cmake -S "${SDK_DIR}/driver/tts/hojo" -B "${HOJO_BUILD_DIR}" \
         -DCMAKE_TOOLCHAIN_FILE="${SDK_DIR}/driver/tts/hojo/toolchains/ax650-aarch64.cmake" \
         -DCMAKE_C_COMPILER="${CC_PATH}" -DCMAKE_CXX_COMPILER="${CXX_PATH}" \
+        "${CMAKE_SYSROOT_ARGS[@]}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="${BUILD_DIR}" \
         -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${BUILD_DIR}" \
