@@ -1,0 +1,130 @@
+audio:
+  playback:
+    device: hw:2,0
+    sample_rate_hz: 48000
+    channels: 2
+  capture:
+    device: hw:2,0
+    sample_rate_hz: 48000
+    channels: 2
+buffers:
+  period_ms: 10
+  alsa_buffer_ms: 50
+  application_buffer_ms: 1000
+apm:
+  aec:
+    enabled: false
+    mode: aec3
+    multi_channel_render: true
+    multi_channel_capture: true
+  delay:
+    base_ms: 0
+  ns:
+    enabled: true
+    level: high
+  agc1:
+    enabled: true
+    mode: fixed_digital
+    target_level_dbfs: 3
+    compression_gain_db: 9
+    limiter: true
+  agc2:
+    enabled: false
+    fixed_gain_db: 0.0
+    adaptive_digital: true
+    adaptive_headroom_db: 5.0
+    adaptive_max_gain_db: 50.0
+    adaptive_initial_gain_db: 15.0
+    adaptive_max_gain_change_db_per_second: 6.0
+    adaptive_max_output_noise_level_dbfs: -50.0
+  gain_adjustment:
+    enabled: true
+    pre_gain_factor: 1.0
+    post_gain_factor: 1.0
+  high_pass_filter_enabled: true
+fastenhance:
+  enabled: true
+  model_path: models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel
+  npu_core: 0
+  monitor_enabled: true
+  library: build/libfastenhance.so
+vad:
+  enabled: true
+  model_path: models-for-asr-chain/vad/ten-vad/ten-vad.axmodel
+  library: driver/vad/lib/libten_vad.so
+  npu_core: 0
+  input_buffer_ms: 2000
+  hop_ms: 16
+  threshold: 0.5
+  min_speech_ms: 615
+  min_segment_seconds: 1.0
+  max_segment_seconds: 30.0
+  trailing_silence_seconds: 1.0
+campplus:
+  enabled: false
+  logging_enabled: false
+  model_path: models-for-asr-chain/campplus/campplus.axmodel
+  speaker_table_path: /tmp/ax-audio-sdk/speakers.json
+  min_cluster_size: 1
+  merge_cosine: 0.5
+  min_num_speakers: 1
+  max_num_speakers: 15
+  speaker_match_threshold: 0.75
+asr:
+  enabled: true
+  model_path: models-for-asr-chain/asr
+  model_type: sensevoice
+  language: zh
+  library: driver/asr/sensevoice/lib/libax_asr_api.so
+  npu_core: 1
+  worker_threads: 1
+llm:
+  enabled: true
+  model_path: models-for-asr-chain/llm/qwen3-1.7b
+  runner: build/qwen3-worker
+  system_prompt: 你是一个乐于助人的助手。
+  translation_mode: true
+  zh_to_en_prompt: translate the following text into English：
+  en_to_zh_prompt: 以下内容翻译成中文：
+  dynamic_load: false
+  dynamic_load_pool_size: 2
+  memory_guard: true
+  memory_guard_floor_mb: 128
+  max_tokens: 128
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 0
+  repetition_penalty: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  thinking_mode: disabled
+  reset_context: true
+  stream_tokens: true
+  queue_capacity: 0
+  output_file: /tmp/ax-audio-sdk/llm.txt
+  npu_lock_file: /tmp/ax-audio-sdk-npu2.lock
+hojo_tts:
+  enabled: true
+  runner: build/hojo-tts-resident
+  model_path: models-for-asr-chain/tts/hojo/models
+  english_voice: 7
+  chinese_voice: 13
+  max_new_tokens: 1600
+  queue_capacity: 0
+  keep_wav: true
+  output_dir: /tmp/ax-audio-sdk/hojo-output
+  playback_gain: 1.0
+  npu_core: 1
+output:
+  temp_dir: /tmp/ax-audio-sdk/segments
+  text_file: /tmp/ax-audio-sdk/transcript.txt
+  mp3_dir: /tmp/ax-audio-sdk/mp3
+  max_mp3_storage_mb: 512
+  mp3_encoder: ffmpeg
+runtime:
+  input: alsa
+  input_wav: /root/wangzizhen/asr-chain/tstwav/tst1.wav
+  file_input_mode: realtime
+  apm_binary: build/run-alsa-apm
+  playback_enabled: true
+  log_level: info

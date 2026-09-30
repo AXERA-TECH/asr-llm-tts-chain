@@ -1,0 +1,10 @@
+prefix=/data/wangzizhen/workspce/webRTC-audio/webrtc-audio-processing/install-aarch64
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: webrtc-audio-processing-2
+Description: WebRTC Audio Processing library
+Version: 2.1
+Libs: -L${libdir} -lwebrtc-audio-processing-2
+Libs.private: -lrt -pthread
+Cflags: -I${includedir}/webrtc-audio-processing-2 -DWEBRTC_LIBRARY_IMPL -DWEBRTC_POSIX

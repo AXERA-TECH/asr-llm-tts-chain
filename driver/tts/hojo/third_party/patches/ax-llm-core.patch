@@ -1,0 +1,210 @@
+diff --git a/src/runner/LLM.cpp b/src/runner/LLM.cpp
+index 907514a..8564767 100644
+--- a/src/runner/LLM.cpp
++++ b/src/runner/LLM.cpp
+@@ -337,9 +337,19 @@ struct LLM::Impl {
+     std::vector<int> last_tokens_ids;
+     std::vector<int> run_input_token_ids;
+     std::vector<int> last_run_generated_token_ids;
++    std::vector<std::vector<unsigned short>> last_run_hidden_states;
+     int last_run_prompt_token_num_ = 0;
+     int get_last_prompt_token_num() const { return last_run_prompt_token_num_; }
+     int get_last_completion_token_num() const { return (int)last_run_generated_token_ids.size(); }
++    std::vector<int> get_last_generated_token_ids() const { return last_run_generated_token_ids; }
++    std::vector<std::vector<unsigned short>> get_last_hidden_states() const { return last_run_hidden_states; }
++    std::vector<int> extra_stop_tokens_;
++    void set_extra_stop_tokens(const std::vector<int> &tokens) { extra_stop_tokens_ = tokens; }
++    bool is_stop_token(int tok) const
++    {
++        if (tokenizer && tokenizer->is_stop(tok)) return true;
++        return std::find(extra_stop_tokens_.begin(), extra_stop_tokens_.end(), tok) != extra_stop_tokens_.end();
++    }
+     std::vector<std::vector<unsigned short>> k_caches, v_caches;
+     struct LinearStateSnapshot {
+         int token_len = 0;
+@@ -2062,7 +2072,14 @@ struct LLM::Impl {
+         // not be the largest. Use discovered capacities to drive global limits.
+         const int max_decode = decode_max_token_len_grp_.back();
+         const int max_prefill = _attr.prefill_max_kv_cache_num_grp.back();
+-        const int canonical_cap = std::max(max_decode, max_prefill);
++        // prefill total_cap is the attention width (history + chunk tokens),
++        // which is one more than the K_cache history slot count. Using it
++        // directly inflates kv_cache_num/max_token_len by one, which then makes
++        // per-layer KV row sizing truncate (e.g. 2176*128/2177 == 127) and drop
++        // the last element of every cached K/V row. Prefer the history capacity.
++        const int max_prefill_history =
++            prefill_history_kv_cache_num_grp.empty() ? max_prefill : prefill_history_kv_cache_num_grp.back();
++        const int canonical_cap = std::max(max_decode, max_prefill_history);
+         if (canonical_cap > 0)
+         {
+             _attr.max_token_len = canonical_cap;
+@@ -3042,7 +3059,12 @@ struct LLM::Impl {
+             {
+                 const int layer_decode_grpid = decode_gid_for_layer(i, decode_grpid);
+                 auto &layer_k = llama_layers[(size_t)i].layer.get_input(layer_decode_grpid, "K_cache");
+-                const int layer_kv_size = (int)(layer_k.nSize / sizeof(unsigned short) / std::max(1, _attr.kv_cache_num));
++                // kv_cache_num can be inflated by prefill group total_cap
++                // (history + current == kv_cache_len + 1), which would make this
++                // division truncate (e.g. 2176*128*2/2/2177 == 127) and drop the
++                // last element of every cached K/V row. Use the mask-derived
++                // history slot count (max_token_len) instead.
++                const int layer_kv_size = (int)(layer_k.nSize / sizeof(unsigned short) / std::max(1, _attr.max_token_len));
+                 if (layer_kv_size > 0)
+                     layer_kv_cache_sizes[(size_t)i] = layer_kv_size;
+             }
+@@ -3768,7 +3790,7 @@ struct LLM::Impl {
+ 
+     void ResetKVCache()
+     {
+-        last_tokens_ids.clear(); last_history_snapshot.clear(); run_input_token_ids.clear(); last_run_generated_token_ids.clear(); k_caches.clear(); v_caches.clear(); linear_state_snapshots_.clear(); precompute_len = 0; cached_mrope_next_pos = -1; active_prefill_pos_start = -1; active_token_pos_start = -1; reset_full_cache_slot_state();
++        last_tokens_ids.clear(); last_history_snapshot.clear(); run_input_token_ids.clear(); last_run_generated_token_ids.clear(); last_run_hidden_states.clear(); k_caches.clear(); v_caches.clear(); linear_state_snapshots_.clear(); precompute_len = 0; cached_mrope_next_pos = -1; active_prefill_pos_start = -1; active_token_pos_start = -1; reset_full_cache_slot_state();
+         decode_grpid = decode_grpids_.empty() ? 0 : decode_grpids_.back();
+         _attr.prefill_grpid = prefill_grpids_.empty() ? 1 : prefill_grpids_.back();
+         if (!_attr.prefill_max_kv_cache_num_grp.empty())
+@@ -4666,6 +4688,7 @@ struct LLM::Impl {
+             unsigned short *post_out = (unsigned short *)t_out.pVirAddr;
+             next_token = post_process(postprocess, post_out, _attr.tokens_embed_num, token_ids, nullptr);
+             dump_decode_trace(0, post_out, _attr.tokens_embed_num, next_token);
++            last_run_hidden_states.emplace_back(embed.data(), embed.data() + _attr.tokens_embed_size);
+             const float ttft_text_ms = ttft_timer.cost();
+             const float ttft_e2e_ms = CurrentRequestElapsedMs();
+             if (ttft_e2e_ms >= 0.0f)
+@@ -4685,7 +4708,7 @@ struct LLM::Impl {
+                 ALOGE("first decode token out of range: token=%d vocab=%d", next_token, _attr.tokens_embed_num);
+                 return final_out;
+             }
+-            b_hit_eos = tokenizer->is_stop(next_token);
++            b_hit_eos = is_stop_token(next_token);
+             if (b_hit_eos)
+             {
+                 ALOGW("first decode token hit stop: token=%d piece='%s' precompute_len=%d input_tokens=%d",
+@@ -5014,12 +5037,13 @@ struct LLM::Impl {
+             llama_post.inference(); auto &t_out = llama_post.get_output("output");
+             unsigned short *post_out = (unsigned short *)t_out.pVirAddr; next_token = post_process(postprocess, post_out, _attr.tokens_embed_num, token_ids, nullptr);
+             dump_decode_trace((int)token_ids.size(), post_out, _attr.tokens_embed_num, next_token);
++            last_run_hidden_states.emplace_back(embed.data(), embed.data() + _attr.tokens_embed_size);
+             if (decode_profile_enabled)
+                 decode_profile.post_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(DecodeClock::now() - post_t0).count();
+             last_shared_sync_decode_grpid = decode_grpid;
+ #endif
+ 
+-            if (tokenizer->is_stop(next_token)) { b_hit_eos = true; break; }
++            if (is_stop_token(next_token)) { b_hit_eos = true; break; }
+             token_ids.push_back(next_token);
+             if (_attr.runing_callback)
+             {
+@@ -5641,6 +5665,7 @@ struct LLM::Impl {
+             }
+         }
+         last_run_generated_token_ids.clear();
++        last_run_hidden_states.clear();
+         run_input_token_ids = tokens_diff;
+         auto reply = Run(out_embed, output_max_token);
+         run_input_token_ids.clear();
+@@ -5718,3 +5743,18 @@ void LLM::ResetKVCache() { impl_->ResetKVCache(); }
+ std::vector<Content> LLM::Run(std::vector<Content> history, int output_max_token) { return impl_->Run(std::move(history), output_max_token); }
+ std::vector<Content> LLM::Run(std::vector<Content> history, const std::vector<MediaInputs> &media_inputs, int output_max_token) { return impl_->Run(std::move(history), media_inputs, output_max_token); }
+ std::string LLM::Run(std::vector<unsigned short> &embed, int output_max_token) { return impl_->Run(embed, output_max_token); }
++
++std::vector<int> LLM::GetLastGeneratedTokenIds() const
++{
++    return impl_ ? impl_->get_last_generated_token_ids() : std::vector<int>{};
++}
++
++std::vector<std::vector<unsigned short>> LLM::GetLastHiddenStates() const
++{
++    return impl_ ? impl_->get_last_hidden_states() : std::vector<std::vector<unsigned short>>{};
++}
++
++void LLM::SetExtraStopTokens(const std::vector<int> &tokens)
++{
++    if (impl_) impl_->set_extra_stop_tokens(tokens);
++}
+diff --git a/src/runner/LLM.hpp b/src/runner/LLM.hpp
+index ea014ee..4664bc5 100644
+--- a/src/runner/LLM.hpp
++++ b/src/runner/LLM.hpp
+@@ -150,6 +150,15 @@ public:
+     std::string GetLastError() const;
+     int GetLastPromptTokenNum() const;
+     int GetLastCompletionTokenNum() const;
++    // Returns the raw generated token ids of the most recent Run(...) call
++    // (including the first decode token). Useful for TTS-style generation
++    // where the tokenizer is not used for text output.
++    std::vector<int> GetLastGeneratedTokenIds() const;
++    // Pre-final-norm layer-9 hidden states of the most recent Run(embed) call:
++    // [0] = last prompt token hidden, [k] = hidden of generated token k.
++    std::vector<std::vector<unsigned short>> GetLastHiddenStates() const;
++    // Extra stop tokens checked in addition to the tokenizer's own stop set.
++    void SetExtraStopTokens(const std::vector<int> &tokens);
+ 
+     bool Embed(const std::string &text, std::vector<float> &out_embedding);
+     bool Embed(const std::vector<Content> &history, const std::vector<MediaInputs> &media_inputs, std::vector<float> &out_embedding);
+diff --git a/src/runner/ax_model_runner/ax_model_runner_ax650.cpp b/src/runner/ax_model_runner/ax_model_runner_ax650.cpp
+index ca8a2f8..c3820d5 100644
+--- a/src/runner/ax_model_runner/ax_model_runner_ax650.cpp
++++ b/src/runner/ax_model_runner/ax_model_runner_ax650.cpp
+@@ -443,17 +443,31 @@ int ax_runner_ax650::init(const char *model_file, int /*devid*/)
+     if (m_handle)
+         deinit();
+ 
+-    MMap model_buffer;
+-    if (!model_buffer.open_file(model_file))
++    const std::string path(model_file);
++    const auto pos = path.find_last_of('/');
++    m_model_name = (pos == std::string::npos) ? path : path.substr(pos + 1);
++
++    // Read the model into a host heap buffer instead of mmap: some board
++    // libax_engine versions crash inside AX_ENGINE_CreateHandleV2 when given
++    // a file-backed mmap buffer. Models are small (MBs), so the host copy is
++    // released right after CreateHandle (see the buffer overload below).
++    std::ifstream f(model_file, std::ios::binary);
++    if (!f.is_open())
+     {
+         ALOGE("model file(%s) open failed", model_file);
+         return -1;
+     }
+-    // Feed the mmap'd data straight to CreateHandle (in the buffer overload below).
+-    // The engine loads it into CMM during init(); we never keep a host-side copy of
+-    // the model (that copy was ~= model size per axmodel and dominated host DDR).
+-    // MMap stays alive for the duration of this call.
+-    return init(reinterpret_cast<char *>(model_buffer.data()), model_buffer.size(), -1);
++    f.seekg(0, std::ios::end);
++    const std::streamoff size = f.tellg();
++    f.seekg(0, std::ios::beg);
++    if (size <= 0)
++    {
++        ALOGE("model file(%s) empty", model_file);
++        return -1;
++    }
++    std::vector<char> model_buffer((size_t)size);
++    f.read(model_buffer.data(), size);
++    return init(model_buffer.data(), (size_t)model_buffer.size(), -1);
+ }
+ 
+ int ax_runner_ax650::init(char *model_buffer, size_t model_size, int /*devid*/)
+@@ -466,7 +480,11 @@ int ax_runner_ax650::init(char *model_buffer, size_t model_size, int /*devid*/)
+     // released right after). This keeps host DDR ~= working set, not model size.
+     m_handle = new ax_runner_ax650_handle_t;
+     AX_ENGINE_HANDLE_EXTRA_T extra{};
+-    extra.pName = (AX_S8 *)(AX_CMM_SESSION_NAME);
++    // Match pyaxengine behavior: session name = model name. Using a fixed
++    // session name like "npu" crashes some libax_engine builds inside
++    // AX_ENGINE_CreateHandleV2.
++    std::string model_name = m_model_name;
++    extra.pName = (AX_S8 *)(model_name.c_str());
+     int ret = AX_ENGINE_CreateHandleV2(&m_handle->handle, model_buffer, model_size, &extra);
+     if (0 != ret)
+     {
+diff --git a/src/runner/ax_model_runner/ax_model_runner_ax650.hpp b/src/runner/ax_model_runner/ax_model_runner_ax650.hpp
+index 867d8f7..6ff154a 100644
+--- a/src/runner/ax_model_runner/ax_model_runner_ax650.hpp
++++ b/src/runner/ax_model_runner/ax_model_runner_ax650.hpp
+@@ -8,6 +8,7 @@ class ax_runner_ax650 : public ax_runner_base
+ {
+ protected:
+     struct ax_runner_ax650_handle_t *m_handle = nullptr;
++    std::string m_model_name;
+     int sub_init();
+ 
+ public:

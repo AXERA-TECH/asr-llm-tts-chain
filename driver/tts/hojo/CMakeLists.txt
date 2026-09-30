@@ -1,0 +1,84 @@
+cmake_minimum_required(VERSION 3.16)
+project(ax_audio_hojo_tts LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_SKIP_RPATH TRUE)
+
+# Hojo intentionally uses its independently pinned AX-LLM runtime. Qwen3 keeps
+# using driver/llm/third_party/ax-llm in another executable and build tree.
+set(HOJO_AXLLM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ax-llm")
+set(AX650_SDK_DIR "" CACHE PATH "AX650 board SDK containing include/ and lib/")
+if(NOT EXISTS "${AX650_SDK_DIR}/include/ax_engine_api.h")
+    message(FATAL_ERROR "Set AX650_SDK_DIR to an AX650 board SDK")
+endif()
+
+set(TOKENIZER_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/tokenizer.cpp tokenizer)
+
+set(TOKENIZER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TOKENIZER_WITH_JINJA ON CACHE BOOL "" FORCE)
+set(TOKENIZER_WITH_HF_LOADER OFF CACHE BOOL "" FORCE)
+add_subdirectory("${HOJO_AXLLM_DIR}/third_party/tokenizer.axera"
+                 "${CMAKE_BINARY_DIR}/hojo-axllm-tokenizer")
+
+set(OPENAI_API_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(OPENAI_API_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(OPENAI_API_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+add_subdirectory("${HOJO_AXLLM_DIR}/third_party/openai-api.cpp"
+                 "${CMAKE_BINARY_DIR}/hojo-openai-api")
+
+set(SIMPLECV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory("${HOJO_AXLLM_DIR}/third_party/SimpleCV"
+                 "${CMAKE_BINARY_DIR}/hojo-simplecv")
+
+set(HOJO_AXLLM_SOURCES
+    "${HOJO_AXLLM_DIR}/src/runner/utils/memory_utils.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/audio_processor.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/cqdm.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/logger.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/net_utils.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/LLM.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/image/sd15_image_generator.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/files.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/image_processor.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/utils/mrope.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/vision/vision_module.cpp"
+    "${HOJO_AXLLM_DIR}/src/runner/ax_model_runner/ax_model_runner_ax650.cpp")
+
+add_library(hojo_axllm_runtime STATIC ${HOJO_AXLLM_SOURCES})
+target_include_directories(hojo_axllm_runtime
+    PUBLIC
+        "${HOJO_AXLLM_DIR}/src"
+        "${HOJO_AXLLM_DIR}/src/runner"
+        "${HOJO_AXLLM_DIR}/src/runner/utils"
+        "${HOJO_AXLLM_DIR}/third_party/tokenizer.axera/include"
+        "${HOJO_AXLLM_DIR}/third_party/magic_enum/include"
+    PRIVATE "${AX650_SDK_DIR}/include")
+
+set(AX_ENGINE_LIBRARY "${AX650_SDK_DIR}/lib/libax_engine.so")
+set(AX_INTERPRETER_LIBRARY "${AX650_SDK_DIR}/lib/libax_interpreter.so")
+set(AX_SYS_LIBRARY "${AX650_SDK_DIR}/lib/libax_sys.so")
+foreach(AX_LIBRARY IN ITEMS AX_ENGINE_LIBRARY AX_INTERPRETER_LIBRARY AX_SYS_LIBRARY)
+    if(NOT EXISTS "${${AX_LIBRARY}}")
+        message(FATAL_ERROR "Required AX650 library not found: ${${AX_LIBRARY}}")
+    endif()
+endforeach()
+
+find_package(Threads REQUIRED)
+find_package(OpenMP QUIET)
+target_link_libraries(hojo_axllm_runtime PUBLIC
+    tokenizer openai_api::server SimpleCV::simplecv
+    "${AX_ENGINE_LIBRARY}" "${AX_INTERPRETER_LIBRARY}" "${AX_SYS_LIBRARY}"
+    Threads::Threads ${CMAKE_DL_LIBS})
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(hojo_axllm_runtime PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+add_executable(hojo-tts-resident
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../framework/hojo/hojo_tts_cpp.cpp")
+target_include_directories(hojo-tts-resident PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tokenizer.cpp/include"
+    "${AX650_SDK_DIR}/include")
+target_link_libraries(hojo-tts-resident PRIVATE hojo_axllm_runtime tokenizer_lib)
