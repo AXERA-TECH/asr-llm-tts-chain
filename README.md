@@ -10,6 +10,51 @@ AudioProcessing（APM）、NPU 降噪、语音活动检测（TEN-VAD）、SenseV
 ![AX650 音频链路](images/framework.png)
 
 ## 快速开始
+### 1. 克隆项目和模型
+
+```bash
+git clone https://github.com/AXERA-TECH/asr-llm-tts-chain.git ax-audio-sdk
+cd ax-audio-sdk
+git clone https://huggingface.co/AXERA-TECH/models-for-asr-chain
+tar -xzf build_release.tar.gz
+```
+
+项目已提供 AArch64 编译产物，无需在开发机编译。依赖或环境异常时，请在本文档中搜索对应关键词。
+
+### 2. 使用脚本部署到AX650
+
+将板端地址和部署目录替换为实际值，在开发机执行：
+
+```bash
+TARGET=root@192.168.1.100 TARGET_DIR=/opt/ax-audio-sdk ./scripts/deploy-ax650.sh
+```
+
+### 3. 查看并配置音频设备
+
+登录板端并启动配置页面：
+
+```bash
+ssh root@192.168.1.100
+cd /opt/ax-audio-sdk
+./scripts/start-ui.sh
+```
+
+在局域网浏览器访问 `http://<板端IP>:7860`，按实际的采集和播放设备保存配置。
+
+### 4. 使用脚本开启运行
+
+在板端另一个终端执行：
+
+```bash
+cd /opt/ax-audio-sdk
+./scripts/run-target.sh
+```
+
+运行日志和识别结果可在 `http://<板端IP>:7862` 查看。
+
+
+
+## 详细细节
 
 下面以 Ubuntu/Debian x86_64 开发机、可通过 SSH 访问的 AX650 板卡为例。编译产物只能
 在 AArch64 AX650 板端运行。板端固件、AX Engine 动态库和编译时使用的 AX650 Board
