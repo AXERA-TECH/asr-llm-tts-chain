@@ -3,10 +3,20 @@ set -euo pipefail
 
 SDK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_PATH="${CONFIG:-${SDK_DIR}/config/sdk-config.yaml}"
+DRY_RUN="${DRY_RUN:-0}"
+FORCE="${FORCE:-0}"
+
+case "${DRY_RUN}" in 0|1) ;; *) echo "DRY_RUN 只接受 0 或 1" >&2; exit 2;; esac
+case "${FORCE}" in 0|1) ;; *) echo "FORCE 只接受 0 或 1" >&2; exit 2;; esac
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
     echo "配置文件不存在：${CONFIG_PATH}" >&2
     exit 1
+fi
+
+if [[ "${FORCE}" != "1" ]] && pgrep -x audio-pipeline >/dev/null 2>&1; then
+    echo "检测到 audio-pipeline 正在运行；请先停止链路，或明确使用 FORCE=1。" >&2
+    exit 2
 fi
 
 # The board cleanup path is intentionally dependency-free. sdk-config.yaml is
@@ -29,7 +39,27 @@ done)"
 # from transcript output while still participating in history cleanup.
 PATHS_TEXT+=$'\n/tmp/ax-audio-sdk/campplus.log'
 
-mapfile -t HISTORY_PATHS <<< "${PATHS_TEXT}"
+mapfile -t HISTORY_PATHS < <(printf '%s\n' "${PATHS_TEXT}" | sed '/^[[:space:]]*$/d' | sort -u)
+
+remove_file() {
+    local path="$1"
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        echo "[预览] 将删除文件：${path}"
+    else
+        rm -f -- "${path}"
+        echo "已删除文件：${path}"
+    fi
+}
+
+clear_directory() {
+    local path="$1"
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        find "${path}" -mindepth 1 -print | sed 's/^/[预览] 将删除：/'
+    else
+        find "${path}" -mindepth 1 -depth -delete
+        echo "已清理目录：${path}"
+    fi
+}
 
 for path in "${HISTORY_PATHS[@]}"; do
     # Never follow a configured symlink: cleaning a symlink target could remove
@@ -39,19 +69,18 @@ for path in "${HISTORY_PATHS[@]}"; do
         continue
     fi
 
-    if [[ "${path}" == "/" || "${path}" == "${SDK_DIR}" ]]; then
+    case "${path}" in
+      /|/tmp|/var|/var/tmp|/root|/home|/data|"${SDK_DIR}")
         echo "拒绝清理危险路径：${path}" >&2
         exit 1
-    fi
+        ;;
+    esac
 
     if [[ -d "${path}" ]]; then
-        # Keep cache directories in place; the audio pipeline can immediately
-        # recreate/use them after cleanup.
-        find "${path}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-        echo "已清理目录：${path}"
+        # Keep configured directories in place so the pipeline can reuse them.
+        clear_directory "${path}"
     elif [[ -e "${path}" ]]; then
-        rm -f -- "${path}"
-        echo "已删除文件：${path}"
+        remove_file "${path}"
     else
         echo "不存在，跳过：${path}"
     fi
@@ -59,7 +88,7 @@ done
 
 # Hojo's optional --keep-prompt debug mode uses this fixed, narrowly scoped
 # mkstemps pattern outside output_dir.
-find /tmp -mindepth 1 -maxdepth 1 -type f -name 'hojo_prompt_*.bin' \
-    -delete -print | while IFS= read -r path; do
-  echo "已删除 Hojo prompt：${path}"
-done
+while IFS= read -r path; do
+    [[ -n "${path}" ]] || continue
+    remove_file "${path}"
+done < <(find /tmp -mindepth 1 -maxdepth 1 -type f -name 'hojo_prompt_*.bin' -print)

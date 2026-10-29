@@ -48,6 +48,8 @@ AX650_SDK_ROOT="${AX650_SDK_ROOT:-}"
 CAMPPLUS_SRC="${SDK_DIR}/driver/campplus"
 CAMPPLUS_EXTRA=()
 CAMPPLUS_LIBS=()
+KWS_EXTRA=()
+KWS_SOURCES=()
 if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
     # Build the small static fbank dependency once in the normal build tree.
     # The two archives are vendored under driver/campplus/third_party, so a
@@ -66,6 +68,8 @@ if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
     cmake --build "${BUILD_DIR}/campplus-knf" --target kaldi-native-fbank-core -j2
     CAMPPLUS_EXTRA+=("-DCAMPPLUS_AVAILABLE=1" "-I${CAMPPLUS_SRC}/include" "-I${KNF_ROOT}/kaldi-native-fbank-1.22.3" "-I${AX650_SDK_ROOT}/include")
     CAMPPLUS_LIBS+=("${BUILD_DIR}/campplus-knf/lib/libkaldi-native-fbank-core.a" "${BUILD_DIR}/campplus-knf/lib/libkissfft-float.a" "-L${AX650_SDK_ROOT}/lib" "-lax_sys" "-lax_engine" "-lax_interpreter")
+    KWS_EXTRA+=("-DKWS_AVAILABLE=1" "-I${SDK_DIR}/driver/kws/include")
+    KWS_SOURCES+=("${SDK_DIR}/driver/kws/src/kws_runtime.cpp")
 else
     CAMPPLUS_EXTRA+=("-I${CAMPPLUS_SRC}/include")
 fi
@@ -75,9 +79,10 @@ fi
 # optional Gradio configuration pages.
 "${CXX}" "${CROSS_FLAGS[@]}" -std=c++17 -O2 \
     -I"${SDK_DIR}/framework" -I"${SDK_DIR}/framework/configui" \
-    -I"${SDK_DIR}/driver/ns/include" -I"${SDK_DIR}/driver/vad/include" -I"${SDK_DIR}/driver/asr/sensevoice/include" "${CAMPPLUS_EXTRA[@]}" \
+    -I"${SDK_DIR}/driver/ns/include" -I"${SDK_DIR}/driver/vad/include" -I"${SDK_DIR}/driver/asr/sensevoice/include" "${CAMPPLUS_EXTRA[@]}" "${KWS_EXTRA[@]}" \
     "${SDK_DIR}/framework/audio_pipeline.cpp" \
     "${CAMPPLUS_SRC}/src/campplus.cpp" \
+    "${KWS_SOURCES[@]}" \
     "${SDK_DIR}/framework/configui/apm-config.cpp" \
     "${CAMPPLUS_LIBS[@]}" -ldl -pthread -Wl,--export-dynamic -Wl,--allow-shlib-undefined \
     -o "${BUILD_DIR}/audio-pipeline"

@@ -103,6 +103,16 @@ def _controls_from_config(config: dict[str, Any]) -> tuple[Any, ...]:
         _value(config, "fastenhance", "model_path", default="models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel"),
         _value(config, "fastenhance", "library", default="build/libfastenhance.so"),
         0,
+        _value(config, "kws", "enabled", default=True),
+        _value(config, "kws", "model_path", default="models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel"),
+        _value(config, "kws", "frontend_path", default="models-for-asr-chain/kws/artifacts/ax650/frontend.bin"),
+        _value(config, "kws", "labels_path", default="models-for-asr-chain/kws/artifacts/ax650/labels.txt"),
+        _value(config, "kws", "output_file", default="/tmp/ax-audio-sdk/kws.txt"),
+        0,
+        _value(config, "kws", "input_buffer_ms", default=500),
+        _value(config, "kws", "threshold", default=0.8),
+        _value(config, "kws", "stable_frames", default=3),
+        _value(config, "kws", "cooldown_ms", default=500),
         _value(config, "vad", "enabled", default=True),
         _value(config, "vad", "library", default="driver/vad/lib/libten_vad.so"),
         _value(config, "vad", "model_path", default="models-for-asr-chain/vad/ten-vad/ten-vad.axmodel"),
@@ -211,7 +221,7 @@ link.title = `打开 ${{target.toString()}}`;
 def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
     initial = _read(str(config_path))
     with gr.Blocks(title="AX650 音频 SDK 配置") as app:
-        gr.Markdown("# AX650 音频处理链配置\nALSA → WebRTC APM → FastEnhance → 低通/16 kHz → TEN-VAD → CampPlus（可选）→ SenseVoice → Qwen3（可选）→ Hojo TTS（可选）")
+        gr.Markdown("# AX650 音频处理链配置\nALSA → WebRTC APM → KWS 旁路监听 → FastEnhance → 低通/16 kHz → TEN-VAD → CampPlus（可选）→ SenseVoice → Qwen3（可选）→ Hojo TTS（可选）")
         path = gr.Textbox(label="统一配置文件", value=str(config_path.resolve()))
         with gr.Tab("ALSA 输入/监听"):
             input_source = gr.Radio(
@@ -245,6 +255,27 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
             enhance_model = gr.Textbox(label="模型路径", value=_value(initial, "fastenhance", "model_path", default="models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel"))
             enhance_library = gr.Textbox(label="FastEnhance 适配库", value=_value(initial, "fastenhance", "library", default="driver/ns/lib/libfastenhance.so"))
             enhance_core = gr.Number(label="NPU 插槽（固定 0：NPU1 单核分区）", value=0, precision=0, interactive=False)
+        with gr.Tab("KWS 监听"):
+            kws_enabled = gr.Checkbox(
+                label="启用KWS监听",
+                value=_value(initial, "kws", "enabled", default=True),
+                info="独立低优先级线程使用有界队列；拥塞时丢弃 KWS 旧帧，不阻塞音频链路。",
+            )
+            with gr.Row():
+                kws_model = gr.Textbox(label="KWS AXModel", value=_value(initial, "kws", "model_path", default="models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel"))
+                kws_frontend = gr.Textbox(label="MFCC 前端系数", value=_value(initial, "kws", "frontend_path", default="models-for-asr-chain/kws/artifacts/ax650/frontend.bin"))
+            with gr.Row():
+                kws_labels = gr.Textbox(label="类别标签文件", value=_value(initial, "kws", "labels_path", default="models-for-asr-chain/kws/artifacts/ax650/labels.txt"))
+                kws_output = gr.Textbox(label="消抖识别输出文件", value=_value(initial, "kws", "output_file", default="/tmp/ax-audio-sdk/kws.txt"))
+            with gr.Row():
+                kws_core = gr.Number(label="NPU 插槽（固定 0：NPU1 小核）", value=0, precision=0, interactive=False)
+                kws_buffer = gr.Slider(10, 2000, step=10, label="旁路输入缓冲 (ms)", value=_value(initial, "kws", "input_buffer_ms", default=500))
+            gr.Markdown("#### KWS 后处理滤波")
+            with gr.Row():
+                kws_threshold = gr.Slider(0, 1, step=0.01, label="关键词最低概率", value=_value(initial, "kws", "threshold", default=0.8))
+                kws_stable = gr.Slider(1, 50, step=1, label="连续稳定帧数", value=_value(initial, "kws", "stable_frames", default=3))
+                kws_cooldown = gr.Slider(1, 60000, step=10, label="触发冷却时间 (ms)", value=_value(initial, "kws", "cooldown_ms", default=500))
+            gr.Markdown("仅输出消抖后的关键词；类别 0 silence 与类别 1 unknown 始终不输出。")
         with gr.Tab("低通与 TEN-VAD"):
             vad_enabled = gr.Checkbox(label="启用 TEN-VAD", value=_value(initial, "vad", "enabled", default=True))
             vad_library = gr.Textbox(label="TEN-VAD 动态库", value=_value(initial, "vad", "library", default="driver/vad/lib/libten_vad.so"))
@@ -365,6 +396,9 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
         controls = [capture_device, capture_rate, capture_channels, playback_device, monitor,
                     enhance_enabled, enhance_model, enhance_library,
                     enhance_core,
+                    kws_enabled, kws_model, kws_frontend, kws_labels,
+                    kws_output, kws_core, kws_buffer, kws_threshold,
+                    kws_stable, kws_cooldown,
                     vad_enabled, vad_library, vad_model, vad_threshold, min_speech, min_segment, max_segment, trailing,
                     campplus_enabled, campplus_logging, campplus_model, speaker_table, min_cluster_size, merge_cosine, speaker_match,
                     sensevoice_enabled, sensevoice_library, sensevoice_model, sensevoice_type, language,
@@ -392,41 +426,62 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 "model_path": str(values[6]).strip(), "library": str(values[7]).strip(),
                 "npu_core": int(values[8]), "monitor_enabled": bool(values[4]),
             })
+            kws = config.setdefault("kws", {})
+            kws.update({
+                "enabled": bool(values[9]),
+                "model_path": str(values[10]).strip(),
+                "frontend_path": str(values[11]).strip(),
+                "labels_path": str(values[12]).strip(),
+                "output_file": str(values[13]).strip(),
+                "npu_core": int(values[14]),
+                "input_buffer_ms": int(values[15]),
+                "threshold": float(values[16]),
+                "stable_frames": int(values[17]),
+                "cooldown_ms": int(values[18]),
+            })
+            if (not kws["model_path"] or not kws["frontend_path"] or
+                    not kws["labels_path"] or not kws["output_file"]):
+                raise gr.Error("KWS 模型、MFCC 系数、标签和输出文件不能为空")
+            if (kws["npu_core"] != 0 or not 10 <= kws["input_buffer_ms"] <= 10000 or
+                    not 0 <= kws["threshold"] <= 1 or
+                    not 1 <= kws["stable_frames"] <= 50 or
+                    not 1 <= kws["cooldown_ms"] <= 60000):
+                raise gr.Error("KWS 小核、缓冲或后处理滤波参数无效")
             vad = config.setdefault("vad", {})
-            vad.update({"enabled": bool(values[9]), "library": str(values[10]).strip(), "model_path": str(values[11]).strip(), "threshold": float(values[12]), "min_speech_ms": int(values[13]), "min_segment_seconds": float(values[14]), "max_segment_seconds": float(values[15]), "trailing_silence_seconds": float(values[16])})
+            vad.update({"enabled": bool(values[19]), "library": str(values[20]).strip(), "model_path": str(values[21]).strip(), "threshold": float(values[22]), "min_speech_ms": int(values[23]), "min_segment_seconds": float(values[24]), "max_segment_seconds": float(values[25]), "trailing_silence_seconds": float(values[26])})
             if vad["max_segment_seconds"] <= vad["min_segment_seconds"] + vad["trailing_silence_seconds"]:
                 raise gr.Error("最长累积必须大于最短累积 + 末尾静音触发时长")
-            config.setdefault("campplus", {}).update({"enabled": bool(values[17]), "logging_enabled": bool(values[18]), "model_path": str(values[19]).strip(), "speaker_table_path": str(values[20]).strip(), "min_cluster_size": int(values[21]), "merge_cosine": float(values[22]), "speaker_match_threshold": float(values[23])})
+            config.setdefault("campplus", {}).update({"enabled": bool(values[27]), "logging_enabled": bool(values[28]), "model_path": str(values[29]).strip(), "speaker_table_path": str(values[30]).strip(), "min_cluster_size": int(values[31]), "merge_cosine": float(values[32]), "speaker_match_threshold": float(values[33])})
             asr = config.setdefault("asr", {})
             asr.pop("runner", None)
-            asr.update({"enabled": bool(values[24]), "library": str(values[25]).strip(), "model_path": str(values[26]).strip(), "model_type": str(values[27]).strip(), "language": str(values[28]).strip(), "npu_core": 1})
-            config.setdefault("output", {}).update({"text_file": str(values[29]).strip(), "temp_dir": str(values[30]).strip(), "mp3_dir": str(values[31]).strip(), "max_mp3_storage_mb": int(values[32])})
+            asr.update({"enabled": bool(values[34]), "library": str(values[35]).strip(), "model_path": str(values[36]).strip(), "model_type": str(values[37]).strip(), "language": str(values[38]).strip(), "npu_core": 1})
+            config.setdefault("output", {}).update({"text_file": str(values[39]).strip(), "temp_dir": str(values[40]).strip(), "mp3_dir": str(values[41]).strip(), "max_mp3_storage_mb": int(values[42])})
             llm = config.setdefault("llm", {})
             llm.update({
-                "enabled": bool(values[33]),
-                "model_path": str(values[34]).strip(),
-                "runner": str(values[35]).strip(),
-                "system_prompt": str(values[36]),
-                "translation_mode": bool(values[37]),
-                "zh_to_en_prompt": str(values[38]),
-                "en_to_zh_prompt": str(values[39]),
-                "dynamic_load": bool(values[40]),
-                "dynamic_load_pool_size": int(values[41]),
-                "memory_guard": bool(values[42]),
-                "memory_guard_floor_mb": int(values[43]),
-                "max_tokens": int(values[44]),
-                "temperature": float(values[45]),
-                "top_p": float(values[46]),
-                "top_k": int(values[47]),
-                "repetition_penalty": float(values[48]),
-                "frequency_penalty": float(values[49]),
-                "presence_penalty": float(values[50]),
-                "thinking_mode": str(values[51]),
-                "reset_context": bool(values[52]),
-                "stream_tokens": bool(values[53]),
-                "queue_capacity": int(values[54]),
-                "output_file": str(values[55]).strip(),
-                "npu_lock_file": str(values[56]).strip(),
+                "enabled": bool(values[43]),
+                "model_path": str(values[44]).strip(),
+                "runner": str(values[45]).strip(),
+                "system_prompt": str(values[46]),
+                "translation_mode": bool(values[47]),
+                "zh_to_en_prompt": str(values[48]),
+                "en_to_zh_prompt": str(values[49]),
+                "dynamic_load": bool(values[50]),
+                "dynamic_load_pool_size": int(values[51]),
+                "memory_guard": bool(values[52]),
+                "memory_guard_floor_mb": int(values[53]),
+                "max_tokens": int(values[54]),
+                "temperature": float(values[55]),
+                "top_p": float(values[56]),
+                "top_k": int(values[57]),
+                "repetition_penalty": float(values[58]),
+                "frequency_penalty": float(values[59]),
+                "presence_penalty": float(values[60]),
+                "thinking_mode": str(values[61]),
+                "reset_context": bool(values[62]),
+                "stream_tokens": bool(values[63]),
+                "queue_capacity": int(values[64]),
+                "output_file": str(values[65]).strip(),
+                "npu_lock_file": str(values[66]).strip(),
             })
             if not llm["model_path"] or not llm["runner"] or not llm["zh_to_en_prompt"] or not llm["en_to_zh_prompt"] or not llm["output_file"] or not llm["npu_lock_file"]:
                 raise gr.Error("Qwen3 模型、Worker、翻译提示词、输出文件和 NPU2 锁路径不能为空")
@@ -444,17 +499,17 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
             hojo.pop("core", None)
             hojo.pop("keep_prompt", None)
             hojo.update({
-                "enabled": bool(values[57]),
-                "runner": str(values[58]).strip(),
-                "model_path": str(values[59]).strip(),
-                "english_voice": int(values[60]),
-                "chinese_voice": int(values[61]),
-                "max_new_tokens": int(values[62]),
-                "queue_capacity": int(values[63]),
-                "keep_wav": bool(values[64]),
-                "output_dir": str(values[65]).strip(),
-                "playback_gain": float(values[66]),
-                "npu_core": int(values[67]),
+                "enabled": bool(values[67]),
+                "runner": str(values[68]).strip(),
+                "model_path": str(values[69]).strip(),
+                "english_voice": int(values[70]),
+                "chinese_voice": int(values[71]),
+                "max_new_tokens": int(values[72]),
+                "queue_capacity": int(values[73]),
+                "keep_wav": bool(values[74]),
+                "output_dir": str(values[75]).strip(),
+                "playback_gain": float(values[76]),
+                "npu_core": int(values[77]),
             })
             if not hojo["runner"] or not hojo["model_path"] or not hojo["output_dir"]:
                 raise gr.Error("Hojo 常驻程序、模型和输出目录不能为空")
@@ -470,9 +525,9 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 raise gr.Error("启用 Hojo TTS 前必须启用 Qwen3 LLM")
             runtime = config.setdefault("runtime", {})
             runtime.update({
-                "input": str(values[68]),
-                "input_wav": str(values[69]).strip(),
-                "file_input_mode": str(values[70]),
+                "input": str(values[78]),
+                "input_wav": str(values[79]).strip(),
+                "file_input_mode": str(values[80]),
             })
             if runtime["input"] not in {"alsa", "file"}:
                 raise gr.Error("输入源只能选择 alsa 或 file")

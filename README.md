@@ -1,9 +1,14 @@
 # AX650 音频链路 SDK
 
 AX Audio SDK 是面向 AX650 板端的实时会议音频处理链路。它把 ALSA 采集、WebRTC
-AudioProcessing（APM）、NPU 降噪、语音活动检测（TEN-VAD）、SenseVoice 语音识别和
+AudioProcessing（APM）、降噪前 KWS 监听、NPU 降噪、语音活动检测（TEN-VAD）、SenseVoice 语音识别和
 音频归档、Qwen3-1.7B 文本生成和 Hojo 语音合成组合成一个可部署的工程。板端主程序是原生 C++，启动时只依赖板端动态库和
 模型；Python/Gradio 用于配置页面和随 `run-target.sh` 启动的运行状态页面。
+
+> **KWS 模型说明：**仓库随附的 KWS AXModel 使用 74,736 参数的外部状态流式网络，
+> 当前权重只经过有限训练，用于验证采集、预处理、NPU 转换、流式状态和音频链路集成，
+> 不代表可用于生产的识别精度。实际产品必须使用自己的数据充分训练，并替换匹配的
+> AXModel、MFCC 前端系数和标签文件。
 
 ## 1. 总体架构
 
@@ -310,7 +315,7 @@ cd /opt/ax-audio-sdk
 ./scripts/run-target.sh
 ```
 
-浏览器访问 `http://<板端IP>:7862` 可查看 ASR、Qwen3 和 Hojo TTS 的运行结果。按
+浏览器访问 `http://<板端IP>:7862` 可查看 KWS、ASR、Qwen3 和 Hojo TTS 的运行结果。按
 `Ctrl+C` 停止链路；`run-target.sh` 会同时停止它启动的状态页面。端口被占用时可参考
 “配置页面”和“板端运行”章节通过环境变量修改。若不需要状态页面，可执行
 `RUNTIME_UI_ENABLED=0 ./scripts/run-target.sh`，此时主管线运行不依赖 `uv`。
@@ -321,6 +326,7 @@ cd /opt/ax-audio-sdk
 | --- | --- | --- |
 | `scripts/build.sh` | 开发机 | 交叉编译主管线、ALSA/APM 前端、FastEnhance、Qwen3 和 Hojo 生产组件，产物写入 `build/`。 |
 | `scripts/deploy-ax650.sh` | 开发机 | 通过 SSH 增量部署生产白名单，校验文件并在板端执行依赖检查。 |
+| `scripts/migrate-config.sh` | 开发机或 AX650 板端 | 保留已有板端配置，只为旧版本补齐缺失的 KWS 配置段并创建备份。 |
 | `scripts/check-target-deps.sh` | AX650 板端 | 检查生产二进制、动态库、全部模型、`uv`、ALSA、播放工具和 MP3 编码器。 |
 | `scripts/start-ui.sh` | 开发机或 AX650 板端 | 启动主配置页（默认 `7860`）和 APM 配置页（默认 `7861`）；只修改 YAML，不启动音频链路。 |
 | `scripts/run-target.sh` | AX650 板端 | 设置运行时动态库路径，启动 C++ 主管线及状态页（默认 `7862`），并统一处理退出信号。 |
@@ -336,6 +342,7 @@ run-alsa-apm ── WebRTC APM（AEC/NS/AGC/高通）
         │ stdout：单声道 48 kHz S16_LE
         ▼
 audio-pipeline（C++）
+        ├─ KWS：降噪前旁路监听，48→16 kHz，10 ms/帧，外部状态流式推理
         ├─ FastEnhance：48 kHz、512 samples/hop，实时降噪
         │       └─ 可选监听：增强音频经 stdin 回写 APM，输出到 ALSA 播放设备
         ├─ 63 tap 低通 + 3:1 抽取：48 kHz → 16 kHz
@@ -351,6 +358,7 @@ audio-pipeline（C++）
 | 设备/前端 | `driver/alsa_briage/run-alsa-apm` | 打开 ALSA、按 10 ms 调度、运行 WebRTC APM；`--stdout` 时向标准输出提供处理后的采集流。 |
 | 管线编排 | `framework/audio_pipeline.cpp` | 连接子进程、调度 FastEnhance/VAD/ASR、管理话段和退出冲刷。 |
 | 降噪 | `driver/ns` + `libfastenhance.so` | AX650 NPU1（LITTLE 单核）上的 48 kHz 实时增强。 |
+| KWS | `driver/kws` + `models-for-asr-chain/kws` | 降噪前的 75k 外部状态流式监听；在独立低优先级线程使用 NPU1 小核，有界队列拥塞时丢弃 KWS 旧帧并重置状态，主管线从不等待。 |
 | VAD | `driver/vad/lib/libten_vad.so` | 在 NPU1 分区进行语音/静音判断。 |
 | ASR | `driver/asr/sensevoice` + `libax_asr_api.so` | 管线通过共享库直接调用 SenseVoice，绑定 NPU2（BIG 双核）。 |
 | LLM | `driver/llm` + `models-for-asr-chain/llm/qwen3-1.7b` | 可选的 Qwen3-1.7B AX650/NPU2 worker。在当前 Cell 内处理 ASR 净文本，token 输出同时触发 Hojo CPU 预分词；worker 空闲时不卸载模型。 |
@@ -358,7 +366,7 @@ audio-pipeline（C++）
 | 说话人 | `driver/campplus` + `models-for-asr-chain/campplus/campplus.axmodel` | 可选的 AX650 NPU1 CAMPPlus 流式 embedding；每 0.75 s 采样一次，话段结束后聚类并持久化 SpeakerTable。VAD 拼接点用于净化跨拼接点的 embedding 窗口，并校正二次语音分割边界。 |
 | 配置 | `framework/configui`、`config/sdk-config.yaml` | 一个 YAML 配置源；页面保存采用临时文件和原子替换。`audio-pipeline` 解析全量配置，`run-alsa-apm` 只解析 `audio`、`buffers`、`apm` 和必要的 `runtime` 字段。 |
 
-AX Engine 以 `BIG_LITTLE`（2+1）模式初始化。FastEnhance 和 TEN-VAD 使用 affinity
+AX Engine 以 `BIG_LITTLE`（2+1）模式初始化。KWS、FastEnhance 和 TEN-VAD 使用 affinity
 `0x2`，SenseVoice 使用 affinity `0x1`。配置中的 `npu_core: 0/1` 是管线插槽校验
 值，不是 AX Engine affinity mask；随包 SenseVoice 模型必须是按 NPU2 编译的版本。
 Qwen3 和 Hojo 同样使用 BIG/NPU2 分区。主管线按输入 FIFO 逐个执行原子 Cell：
@@ -376,6 +384,30 @@ Qwen3 的 ax-llm；具体约束和恢复方法见“Hojo 专用 ax-llm（强制�
 当配置已启用 Qwen3 或 Hojo、但对应常驻进程无法启动时，主管线会直接报错退出，避免
 在“已启用”配置下静默跳过 LLM 或语音合成。三个阶段都就绪后日志会输出
 `[pipeline] ASR -> Qwen3 -> Hojo TTS chain is ready`。
+
+### KWS 模型与替换要求
+
+KWS 从 WebRTC APM 输出、FastEnhance 降噪输入之前旁路取音，在独立低优先级线程中把
+48 kHz PCM 转成 16 kHz、每 10 ms 生成一帧 MFCC，并在 NPU1 LITTLE 小核（affinity
+`0x2`）执行外部状态流式推理。主管线使用有界队列；KWS 来不及处理时丢弃旧帧并重置
+流式状态，不让监听任务反向阻塞降噪、VAD 或 ASR。
+
+随包网络共有 **74,736 个可训练参数（约 75k）**，输出 8 类，类别 0/1 固定为
+`_silence_` 和 `_unknown_`。当前随包权重未充分训练，仅适合功能和性能冒烟测试；其
+验证集结果不能作为产品精度指标。用户应使用目标关键词、真实麦克风、噪声和远近场
+数据重新训练、验证并转换 AXModel。
+
+替换模型时必须同步更新以下三个文件，不能只替换 `.axmodel`：
+
+- `kws.model_path`：AX650 `BIG_LITTLE (2+1)` 模式下为 NPU1 小核编译的外部状态 AXModel。
+- `kws.frontend_path`：与训练时完全一致的窗函数、Mel、DCT 和归一化系数 `frontend.bin`。
+- `kws.labels_path`：逐行标签文件；前两行必须是 `_silence_`、`_unknown_`，其余顺序必须
+  与模型输出维度一致。
+
+当前 C++ 运行时固定检查 40 维 MFCC、8 类输出和 6 组外部状态。如果用户改变类别数、
+特征维度或状态数量，还需要同步修改并重新构建 `driver/kws`，不能只在 Gradio 页面中
+改路径。后处理可在“KWS 监听”页面配置概率阈值、连续稳定帧数和触发冷却时间；只有
+消抖后的类别 2 及以上结果会写入终端及 `kws.output_file`。
 
 `run-alsa-apm --stdout` 与后续管线之间的接口是稳定的单声道 48 kHz、16-bit little
 endian 原始 PCM。启用 `fastenhance.monitor_enabled` 后，增强后的 PCM 由独立线程回写
@@ -553,8 +585,9 @@ CXX=aarch64-linux-gnu-g++ ./driver/ns/build-fastenhance.sh
 `scripts/deploy-ax650.sh` 只处理生产运行白名单，并用文件大小和 SHA-256 比较
 开发机与板端文件；已存在且内容相同的模型不会重复传输。变更文件先写入板端同目录
 的临时文件，校验成功后再原子替换，传输中断不会破坏原文件。部署完成后会在板端
-执行依赖检查。默认目标为 `root@10.126.29.50`，目标目录为
-`/root/wangzizhen/asr-chain`，均可通过环境变量覆盖：
+执行依赖检查。默认目标为 `root@10.126.29.18`，目标目录为 `/root/asr-chain`，均可
+通过环境变量覆盖。默认 `DEPLOY_CONFIG=preserve`，会保留板端音频设备和运行参数；旧
+配置缺少 KWS 段时只补齐该段，并保存 `config/sdk-config.yaml.pre-kws.bak`：
 
 ```bash
 TARGET=root@192.168.1.20 \
@@ -566,6 +599,12 @@ TARGET_DIR=/opt/ax-audio-sdk \
 
 ```bash
 SSH_PASSWORD='***' TARGET=root@192.168.1.20 ./scripts/deploy-ax650.sh
+```
+
+只有明确需要用开发机配置覆盖板端配置时才使用：
+
+```bash
+DEPLOY_CONFIG=replace SSH_PASSWORD='***' ./scripts/deploy-ax650.sh
 ```
 
 ### 手动部署
@@ -584,6 +623,7 @@ driver/vad/lib/libten_vad.so
 driver/asr/sensevoice/lib/libax_asr_api.so
 models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel
 models-for-asr-chain/vad/ten-vad/ten-vad.axmodel
+models-for-asr-chain/kws/artifacts/ax650/{kws_75k_npu1.axmodel,frontend.bin,labels.txt}
 models-for-asr-chain/campplus/campplus.axmodel
 models-for-asr-chain/asr/sensevoice/{sensevoice.axmodel,tokens.txt,am.mvn,
   chn_jpn_yue_eng_ko_spectok.bpe.model}
@@ -622,6 +662,7 @@ cd /opt/ax-audio-sdk
 
 `run-target.sh` 会设置 `LD_LIBRARY_PATH`，同时启动 `build/audio-pipeline` 和 Gradio
 运行状态页面。状态页面默认监听 `0.0.0.0:7862`，读取同一份配置中的输出路径，显示
+消抖后的 KWS 关键词（不显示 silence/unknown）、
 全部 SenseVoice 识别历史、全部 Qwen3 响应历史，以及 Hojo 最新合成 WAV 的播放器。
 局域网访问地址为 `http://<板端IP>:7862`。也可指定配置：
 
@@ -780,6 +821,9 @@ scp config/sdk-config.yaml root@192.168.1.20:/opt/ax-audio-sdk/config/sdk-config
   否则载入播放队列后删除。运行页面的 `latest-*.wav` 是最新成功的分段。
 - 退出时输出 FastEnhance/TEN-VAD 的调用次数、平均/最大耗时和近似 NPU 占用率；正常
   运行期间不打印 TEN-VAD 的逐 hop 概率，仅在处理失败时输出错误。
+- KWS 命中在终端以 `[kws] <关键词> confidence=<概率>` 输出，同时追加到
+  `kws.output_file` 供运行状态 Gradio 页面读取。只有通过概率阈值、连续稳定帧和
+  冷却时间滤波的类别 2 及以上结果会输出。
 - `cannot load ...`：检查配置中的动态库路径和 `LD_LIBRARY_PATH`。
 - `AX Engine BIG_LITTLE init failed`：确认板端固件支持 BIG_LITTLE，且切换 VNPU 模式后
   已按提示重启。
@@ -792,8 +836,15 @@ scp config/sdk-config.yaml root@192.168.1.20:/opt/ax-audio-sdk/config/sdk-config
 清理历史输出（不会删除配置和模型）：
 
 ```bash
+# 先预览配置指向的 KWS/ASR/LLM/TTS/MP3/说话人输出
+DRY_RUN=1 ./scripts/clean-history.sh
+
+# 确认后执行
 ./scripts/clean-history.sh
 ```
+
+为避免与写入竞争，检测到 `audio-pipeline` 运行时清理脚本会拒绝执行。通常应先停止
+链路；只有明确接受运行中删除输出的风险时才使用 `FORCE=1`。
 
 ## 10. 已知限制与后续方向
 

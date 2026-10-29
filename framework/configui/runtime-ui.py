@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live Gradio dashboard for ASR, Qwen3, and Hojo runtime outputs."""
+"""Live Gradio dashboard for KWS, ASR, Qwen3, and Hojo runtime outputs."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ LLM_RECORD = re.compile(r"^\[[^\]\r\n]+\] (ASR|Qwen3):(?: |$)")
 
 @dataclass(frozen=True)
 class RuntimeOutputs:
+    kws_log: Path
     asr_log: Path
     llm_log: Path
     tts_dir: Path
@@ -49,6 +50,7 @@ def load_runtime_outputs(config_path: Path, base_dir: Path = SDK_DIR) -> Runtime
     if not isinstance(config, dict):
         raise ValueError("YAML根节点必须是映射")
     return RuntimeOutputs(
+        kws_log=_resolve_output(_nested(config, "kws", "output_file"), base_dir),
         asr_log=_resolve_output(_nested(config, "output", "text_file"), base_dir),
         llm_log=_resolve_output(_nested(config, "llm", "output_file"), base_dir),
         tts_dir=_resolve_output(_nested(config, "hojo_tts", "output_dir"), base_dir),
@@ -123,13 +125,14 @@ def latest_tts_wav(directory: Path) -> str | None:
         return None
 
 
-def read_snapshot(outputs: RuntimeOutputs) -> tuple[str, str, str | None]:
+def read_snapshot(outputs: RuntimeOutputs) -> tuple[str, str, str, str | None]:
+    kws = _read_history(outputs.kws_log, "暂无消抖后的 KWS 识别结果。")
     asr = _read_history(outputs.asr_log, "暂无 SenseVoice 识别结果。")
     llm_content = _read_history(outputs.llm_log, "")
     llm = extract_llm_responses(llm_content) if llm_content else "暂无 Qwen3 响应结果。"
     if not llm:
         llm = "暂无 Qwen3 响应结果。"
-    return asr, llm, latest_tts_wav(outputs.tts_dir)
+    return kws, asr, llm, latest_tts_wav(outputs.tts_dir)
 
 
 def build_ui(outputs: RuntimeOutputs, refresh_seconds: float = 1.0) -> gr.Blocks:
@@ -141,30 +144,35 @@ def build_ui(outputs: RuntimeOutputs, refresh_seconds: float = 1.0) -> gr.Blocks
             "# AX650 模型运行状态\n"
             f"每 {refresh_seconds:g} 秒自动刷新；文字区域保留全部历史，TTS 仅显示最新 WAV。"
         )
+        kws_log = gr.Textbox(
+            label="KWS 识别历史（已消抖，已排除 silence / unknown）",
+            value=initial[0], lines=8, max_lines=16,
+            interactive=False, autoscroll=True,
+        )
         asr_log = gr.Textbox(
             label="ASR（SenseVoice）识别历史",
-            value=initial[0], lines=14, max_lines=24,
+            value=initial[1], lines=14, max_lines=24,
             interactive=False, autoscroll=True,
         )
         llm_log = gr.Textbox(
             label="LLM（Qwen3）响应历史",
-            value=initial[1], lines=14, max_lines=24,
+            value=initial[2], lines=14, max_lines=24,
             interactive=False, autoscroll=True,
         )
         tts_audio = gr.Audio(
             label="TTS（Hojo）最新合成音频",
-            value=initial[2], type="filepath", format="wav",
+            value=initial[3], type="filepath", format="wav",
             interactive=False, autoplay=False,
         )
         timer = gr.Timer(refresh_seconds)
         timer.tick(
             lambda: read_snapshot(outputs),
-            outputs=[asr_log, llm_log, tts_audio],
+            outputs=[kws_log, asr_log, llm_log, tts_audio],
             concurrency_limit=1,
         )
         app.load(
             lambda: read_snapshot(outputs),
-            outputs=[asr_log, llm_log, tts_audio],
+            outputs=[kws_log, asr_log, llm_log, tts_audio],
         )
     return app
 

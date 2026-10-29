@@ -1,0 +1,50 @@
+audio:
+  playback:
+    device: default
+    sample_rate_hz: 48000
+    channels: 1
+  capture:
+    device: default
+    sample_rate_hz: 48000
+    channels: 1
+buffers:
+  period_ms: 10
+  alsa_buffer_ms: 50
+  application_buffer_ms: 1000
+fastenhance:
+  enabled: true
+  model_path: models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel
+  library: build/libfastenhance.so
+  npu_core: 0
+  monitor_enabled: false
+kws:
+  enabled: true
+  model_path: models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel
+  frontend_path: models-for-asr-chain/kws/artifacts/ax650/frontend.bin
+  labels_path: models-for-asr-chain/kws/artifacts/ax650/labels.txt
+  output_file: /tmp/ax-audio-sdk/kws.txt
+  npu_core: 0
+  input_buffer_ms: 500
+  threshold: 0.50
+  stable_frames: 2
+  cooldown_ms: 500
+vad:
+  enabled: false
+campplus:
+  enabled: false
+asr:
+  enabled: false
+llm:
+  enabled: false
+hojo_tts:
+  enabled: false
+output:
+  temp_dir: /tmp/ax-audio-sdk/segments
+  text_file: /tmp/ax-audio-sdk/transcript.txt
+  mp3_dir: /tmp/ax-audio-sdk/mp3
+runtime:
+  input: file
+  input_wav: /root/wangzizhen/asr-chain/testdata/yes-loop.wav
+  file_input_mode: realtime
+  apm_binary: build/run-alsa-apm
+  playback_enabled: false

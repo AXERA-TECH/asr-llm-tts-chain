@@ -2,9 +2,19 @@
 set -euo pipefail
 
 SDK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="${TARGET:-root@10.126.29.50}"
-TARGET_DIR="${TARGET_DIR:-/root/wangzizhen/asr-chain}"
+TARGET="${TARGET:-root@10.126.29.18}"
+TARGET_DIR="${TARGET_DIR:-/root/asr-chain}"
 SSH_PASSWORD="${SSH_PASSWORD:-}"
+DEPLOY_CONFIG="${DEPLOY_CONFIG:-preserve}"
+
+if [[ "${TARGET_DIR}" != /* || "${TARGET_DIR}" == "/" ]]; then
+    echo "TARGET_DIR 必须是非根绝对路径：${TARGET_DIR}" >&2
+    exit 2
+fi
+case "${DEPLOY_CONFIG}" in
+    preserve|replace) ;;
+    *) echo "DEPLOY_CONFIG 只接受 preserve 或 replace" >&2; exit 2 ;;
+esac
 
 ssh_command=(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10)
 if [[ -n "${SSH_PASSWORD}" ]]; then
@@ -23,11 +33,11 @@ deploy_items=(
     build/libfastenhance.so
     build/qwen3-worker
     build/hojo-tts-resident
-    config/sdk-config.yaml
     config/default-config.yaml
     scripts/run-target.sh
     scripts/check-target-deps.sh
     scripts/clean-history.sh
+    scripts/migrate-config.sh
     scripts/start-ui.sh
     README.md
     .python-version
@@ -41,6 +51,9 @@ deploy_items=(
     driver/asr/sensevoice/lib/libax_asr_api.so
     models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel
     models-for-asr-chain/vad/ten-vad/ten-vad.axmodel
+    models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel
+    models-for-asr-chain/kws/artifacts/ax650/frontend.bin
+    models-for-asr-chain/kws/artifacts/ax650/labels.txt
     models-for-asr-chain/campplus/campplus.axmodel
     models-for-asr-chain/llm/qwen3-1.7b/config.json
     models-for-asr-chain/llm/qwen3-1.7b/post_config.json
@@ -62,6 +75,9 @@ deploy_items=(
     models-for-asr-chain/asr/sensevoice/am.mvn
     models-for-asr-chain/asr/sensevoice/chn_jpn_yue_eng_ko_spectok.bpe.model
 )
+if [[ "${DEPLOY_CONFIG}" == "replace" ]]; then
+    deploy_items+=(config/sdk-config.yaml)
+fi
 for index in {0..27}; do
     deploy_items+=("models-for-asr-chain/llm/qwen3-1.7b/qwen3_p128_l${index}_together.axmodel")
 done
@@ -114,6 +130,7 @@ target_dir='${TARGET_DIR}'
 mkdir -p \"\${target_dir}\"
 while read -r expected_size expected_hash relative_path; do
     destination=\"\${target_dir}/\${relative_path}\"
+    rm -f \"\${destination}.deploy-part\"
     if [ ! -f \"\${destination}\" ]; then
         printf '%s\\n' \"\${relative_path}\"
         continue
@@ -180,10 +197,11 @@ echo "Incremental deploy: ${unchanged_count} unchanged, ${#changed_items[@]} upl
       models-for-asr-chain/asr/sensevoice/streaming_sensevoice.axmodel && \
     chmod +x build/run-alsa-apm build/audio-pipeline build/qwen3-worker \
       build/hojo-tts-resident scripts/check-target-deps.sh \
-      scripts/run-target.sh scripts/clean-history.sh \
+      scripts/run-target.sh scripts/clean-history.sh scripts/migrate-config.sh \
       scripts/start-ui.sh && \
     chmod 444 config/default-config.yaml && \
+    ./scripts/migrate-config.sh && \
     LD_LIBRARY_PATH=driver/apm/lib:/soc/lib:/opt/lib ldd build/run-alsa-apm && \
     ./scripts/check-target-deps.sh"
 
-echo "Deployed production runtime to ${TARGET}:${TARGET_DIR}"
+echo "Deployed production runtime to ${TARGET}:${TARGET_DIR} (config=${DEPLOY_CONFIG})"

@@ -3,7 +3,7 @@
 SDK 使用一个配置文件：`../../config/sdk-config.yaml`。
 
 `runtime-ui.py` 是随 `scripts/run-target.sh` 自动启动的运行状态页面，默认端口为
-`7862`。它从配置中读取 ASR、LLM 和 Hojo 输出路径：前两个文本框显示全部历史，
+`7862`。它从配置中读取 KWS、ASR、LLM 和 Hojo 输出路径：文本框显示全部历史，
 TTS 播放器只显示 `hojo_tts.output_dir/latest-*.wav` 中最近一次合成结果。
 主管线退出时该页面也会由启动脚本停止。
 
@@ -14,8 +14,8 @@ cd /path/to/ax-audio-sdk
 ./start-ui.sh
 ```
 
-主页面默认是 `http://127.0.0.1:7860`，包含 ALSA、FastEnhance 监听/AEC
-参考、低通/抽取、TEN-VAD、SenseVoice、Qwen3、Hojo TTS 和输出存储配置；APM 页面是
+主页面默认是 `http://127.0.0.1:7860`，包含 ALSA、降噪前 KWS 监听及后处理滤波、
+FastEnhance 监听/AEC 参考、低通/抽取、TEN-VAD、SenseVoice、Qwen3、Hojo TTS 和输出存储配置；APM 页面是
 `http://127.0.0.1:7861`。
 主页面中的“打开 WebRTC APM 专用设置页面”链接会自动沿用浏览器当前访问的
 协议和主机名，只将端口切换为 APM 端口；因此使用 `127.0.0.1`、`localhost`

@@ -4,6 +4,9 @@
 #include "ax_asr_api.h"
 #include "campplus.h"
 #include "hojo/text_chunks.h"
+#ifdef KWS_AVAILABLE
+#include "kws_runtime.h"
+#endif
 #include <future>
 
 #include <array>
@@ -37,6 +40,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/file.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <vector>
 
@@ -264,7 +268,16 @@ class NpuArbiter {
   }
   void VadLock() {
     std::unique_lock<std::mutex> lock(mutex_);
+    ++vad_waiters_;
     cv_.wait(lock, [&] { return !active_ && fast_waiters_ == 0; });
+    --vad_waiters_;
+    active_ = true;
+  }
+  void KwsLock() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [&] {
+      return !active_ && fast_waiters_ == 0 && vad_waiters_ == 0;
+    });
     active_ = true;
   }
   void Unlock() { std::lock_guard<std::mutex> lock(mutex_); active_ = false; cv_.notify_all(); }
@@ -273,6 +286,7 @@ class NpuArbiter {
   std::condition_variable cv_;
   bool active_ = false;
   int fast_waiters_ = 0;
+  int vad_waiters_ = 0;
 };
 
 class Timing {
@@ -1580,16 +1594,161 @@ int StopChild(Child* child) { int status = 0; if (child->in >= 0) { close(child-
 
 class Pipeline {
  public:
-  Pipeline(apm_example::AppConfig c, std::string config_path) : config_(std::move(c)), config_path_(std::move(config_path)), arbiter_(), npu2_arbiter_(config_.llm.npu_lock_file), playback_mixer_(), results_(config_, &npu2_arbiter_, [this](std::vector<int16_t> samples) { playback_mixer_.AppendTts(std::move(samples)); }), enhancer_(config_, &arbiter_), vad_(config_, &arbiter_), accumulator_(config_, &arbiter_, [this](Segment s) { results_.Submit(std::move(s)); }), vad_jobs_(std::max<size_t>(4, config_.vad.input_buffer_ms / std::max(1, config_.vad.hop_ms))), monitor_queue_(monitor_queue_capacity(config_)) { vad_thread_ = std::thread([this] { VadLoop(); }); }
+  Pipeline(apm_example::AppConfig c, std::string config_path)
+      : config_(std::move(c)), config_path_(std::move(config_path)),
+        arbiter_(), npu2_arbiter_(config_.llm.npu_lock_file),
+        playback_mixer_(),
+        results_(config_, &npu2_arbiter_,
+                 [this](std::vector<int16_t> samples) {
+                   playback_mixer_.AppendTts(std::move(samples));
+                 }),
+        enhancer_(config_, &arbiter_), vad_(config_, &arbiter_),
+        accumulator_(config_, &arbiter_,
+                     [this](Segment s) { results_.Submit(std::move(s)); }),
+        vad_jobs_(std::max<size_t>(
+            4, config_.vad.input_buffer_ms / std::max(1, config_.vad.hop_ms))),
+        monitor_queue_(monitor_queue_capacity(config_)) {
+#ifdef KWS_AVAILABLE
+    if (config_.kws.enabled) {
+      const fs::path output(config_.kws.output_file);
+      if (!output.parent_path().empty()) fs::create_directories(output.parent_path());
+      std::ofstream(output, std::ios::trunc);
+      kws_runtime_ = std::make_unique<kws::Runtime>(
+          config_.kws, [this] { arbiter_.KwsLock(); },
+          [this] { arbiter_.Unlock(); });
+      kws_jobs_ = std::make_unique<BlockingQueue<std::vector<int16_t>>>(
+          std::max<size_t>(1, config_.kws.input_buffer_ms / 10));
+      kws_thread_ = std::thread([this] { KwsLoop(); });
+    }
+#else
+    if (config_.kws.enabled)
+      throw std::runtime_error(
+          "KWS is enabled but audio-pipeline was built without AX650 SDK");
+#endif
+    vad_thread_ = std::thread([this] { VadLoop(); });
+  }
   void Run() { child_ = StartApm(config_, config_path_); std::thread monitor; if (config_.fastenhance.monitor_enabled || config_.hojo_tts.enabled) monitor = std::thread([this] { MonitorLoop(); }); std::vector<int16_t> raw(kRateIn / 100); while (!g_stop.load() && ReadAll(child_.out, raw.data(), raw.size() * sizeof(int16_t))) Process(raw); monitor_queue_.Close(); const int child_status = StopChild(&child_); if (monitor.joinable()) monitor.join(); const bool interrupted = g_stop.load(); Close(interrupted); if (!interrupted && (child_status == -1 || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0)) throw std::runtime_error("APM input process exited with an error"); }
-  void Close(bool abort = false) { if (closed_) return; closed_ = true; if (!abort) { if (!enhance_remainder_.empty()) { const size_t n = enhance_remainder_.size(); enhance_remainder_.resize(kEnhanceHop, 0); std::vector<int16_t> tail = enhance_remainder_; enhance_remainder_.clear(); Process(tail); (void)n; } if (!vad_remainder_.empty()) { vad_remainder_.resize(vad_.Hop(), 0); if (BatchInput()) vad_jobs_.Push(vad_remainder_); else vad_jobs_.TryPush(vad_remainder_); vad_remainder_.clear(); } } vad_jobs_.Close(); if (vad_thread_.joinable()) vad_thread_.join(); if (!abort) accumulator_.Flush(); results_.Close(abort); enhancer_.Report(); vad_.Report(); }
+  void Close(bool abort = false) {
+    if (closed_) return;
+    closed_ = true;
+    if (!abort) {
+      if (!enhance_remainder_.empty()) {
+        const size_t n = enhance_remainder_.size();
+        enhance_remainder_.resize(kEnhanceHop, 0);
+        std::vector<int16_t> tail = enhance_remainder_;
+        enhance_remainder_.clear();
+        Process(tail, false);
+        (void)n;
+      }
+      if (!vad_remainder_.empty()) {
+        vad_remainder_.resize(vad_.Hop(), 0);
+        if (BatchInput()) vad_jobs_.Push(vad_remainder_);
+        else vad_jobs_.TryPush(vad_remainder_);
+        vad_remainder_.clear();
+      }
+    }
+#ifdef KWS_AVAILABLE
+    if (kws_jobs_) kws_jobs_->Close();
+    if (kws_thread_.joinable()) kws_thread_.join();
+    if (kws_runtime_) {
+      kws_runtime_->Report();
+      std::cerr << "[kws] dropped_input_blocks="
+                << kws_dropped_blocks_.load() << "\n";
+    }
+#endif
+    vad_jobs_.Close();
+    if (vad_thread_.joinable()) vad_thread_.join();
+    if (!abort) accumulator_.Flush();
+    results_.Close(abort);
+    enhancer_.Report();
+    vad_.Report();
+  }
  private:
-  void Process(const std::vector<int16_t>& input) { enhance_remainder_.insert(enhance_remainder_.end(), input.begin(), input.end()); while (enhance_remainder_.size() >= kEnhanceHop) { std::array<int16_t, kEnhanceHop> hop{}; std::copy_n(enhance_remainder_.begin(), kEnhanceHop, hop.begin()); enhance_remainder_.erase(enhance_remainder_.begin(), enhance_remainder_.begin() + kEnhanceHop); auto output = enhancer_.Process(hop); std::vector<int16_t> rendered(output.begin(), output.end()); if (!monitor_queue_.TryPush(rendered)) { monitor_queue_.TryDropOldest(); monitor_queue_.TryPush(std::move(rendered)); } std::vector<int16_t> enhanced(output.begin(), output.end()); auto down = decimator_.Process(enhanced); vad_remainder_.insert(vad_remainder_.end(), down.begin(), down.end()); while (vad_remainder_.size() >= static_cast<size_t>(vad_.Hop())) { std::vector<int16_t> v(vad_remainder_.begin(), vad_remainder_.begin() + vad_.Hop()); vad_remainder_.erase(vad_remainder_.begin(), vad_remainder_.begin() + vad_.Hop()); if (BatchInput()) vad_jobs_.Push(std::move(v)); else if (!vad_jobs_.TryPush(v)) { vad_jobs_.TryDropOldest(); vad_jobs_.TryPush(std::move(v)); } } } }
+  void Process(const std::vector<int16_t>& input, bool feed_kws = true) {
+#ifdef KWS_AVAILABLE
+    // KWS listens to the post-APM, pre-FastEnhance signal. This copy is
+    // strictly non-blocking; an overloaded KWS consumer loses old frames and
+    // resets its streaming state while the main audio path keeps running.
+    if (feed_kws && kws_jobs_ && !kws_jobs_->TryPush(input)) {
+      kws_jobs_->TryDropOldest();
+      ++kws_dropped_blocks_;
+      kws_discontinuity_.store(true);
+      kws_jobs_->TryPush(input);
+    }
+#endif
+    enhance_remainder_.insert(
+        enhance_remainder_.end(), input.begin(), input.end());
+    while (enhance_remainder_.size() >= kEnhanceHop) {
+      std::array<int16_t, kEnhanceHop> hop{};
+      std::copy_n(enhance_remainder_.begin(), kEnhanceHop, hop.begin());
+      enhance_remainder_.erase(
+          enhance_remainder_.begin(), enhance_remainder_.begin() + kEnhanceHop);
+      auto output = enhancer_.Process(hop);
+      std::vector<int16_t> rendered(output.begin(), output.end());
+      if (!monitor_queue_.TryPush(rendered)) {
+        monitor_queue_.TryDropOldest();
+        monitor_queue_.TryPush(std::move(rendered));
+      }
+      std::vector<int16_t> enhanced(output.begin(), output.end());
+      auto down = decimator_.Process(enhanced);
+      vad_remainder_.insert(vad_remainder_.end(), down.begin(), down.end());
+      while (vad_remainder_.size() >= static_cast<size_t>(vad_.Hop())) {
+        std::vector<int16_t> v(
+            vad_remainder_.begin(), vad_remainder_.begin() + vad_.Hop());
+        vad_remainder_.erase(
+            vad_remainder_.begin(), vad_remainder_.begin() + vad_.Hop());
+        if (BatchInput()) vad_jobs_.Push(std::move(v));
+        else if (!vad_jobs_.TryPush(v)) {
+          vad_jobs_.TryDropOldest();
+          vad_jobs_.TryPush(std::move(v));
+        }
+      }
+    }
+  }
+#ifdef KWS_AVAILABLE
+  void KwsLoop() {
+    // CPU scheduling is deliberately best-effort; NPU arbitration also keeps
+    // every waiting FastEnhance call ahead of KWS.
+    setpriority(PRIO_PROCESS, 0, 10);
+    std::vector<int16_t> samples;
+    while (kws_jobs_->Pop(&samples)) {
+      try {
+        if (kws_discontinuity_.exchange(false)) {
+          kws_runtime_->Reset();
+          std::cerr << "[kws] input overflow; streaming state reset\n";
+        }
+        for (const auto& detection : kws_runtime_->Process48k(samples)) {
+          std::ostringstream line;
+          line << "[" << TimeStamp(WallClock::now()) << "] KWS: "
+               << detection.label << " confidence=" << std::fixed
+               << std::setprecision(2) << detection.confidence * 100.0f
+               << "%";
+          std::cerr << "[kws] " << detection.label << " confidence="
+                    << std::fixed << std::setprecision(2)
+                    << detection.confidence * 100.0f << "%\n";
+          std::ofstream output(config_.kws.output_file, std::ios::app);
+          if (output) output << line.str() << "\n";
+        }
+      } catch (const std::exception& error) {
+        std::cerr << "[kws] worker stopped: " << error.what() << "\n";
+        break;
+      }
+    }
+  }
+#endif
   void VadLoop() { std::vector<int16_t> hop; while (vad_jobs_.Pop(&hop)) { bool voiced = true; try { voiced = vad_.Process(hop); } catch (const std::exception& e) { std::cerr << "[ten-vad] " << e.what() << "\n"; } accumulator_.Push(hop, voiced); } }
   void MonitorLoop() { std::vector<int16_t> hop; while (!g_stop.load() && monitor_queue_.Pop(&hop)) { playback_mixer_.Mix(&hop, config_.fastenhance.monitor_enabled); if (!WriteAll(child_.in, hop.data(), hop.size() * sizeof(int16_t))) break; } }
   bool BatchInput() const { return config_.runtime.input == "file" && config_.runtime.file_input_mode == "batch"; }
   static size_t monitor_queue_capacity(const apm_example::AppConfig& c) { return std::max<size_t>(2, static_cast<size_t>(c.buffers.application_buffer_ms) * kRateIn / 1000 / kEnhanceHop); }
-  apm_example::AppConfig config_; std::string config_path_; NpuArbiter arbiter_; Npu2CellArbiter npu2_arbiter_; PlaybackMixer playback_mixer_; ResultWorker results_; FastEnhance enhancer_; TenVad vad_; Decimator decimator_; Accumulator accumulator_; BlockingQueue<std::vector<int16_t>> vad_jobs_; BlockingQueue<std::vector<int16_t>> monitor_queue_; std::thread vad_thread_; std::vector<int16_t> enhance_remainder_, vad_remainder_; Child child_; bool closed_ = false;
+  apm_example::AppConfig config_; std::string config_path_; NpuArbiter arbiter_; Npu2CellArbiter npu2_arbiter_; PlaybackMixer playback_mixer_; ResultWorker results_; FastEnhance enhancer_; TenVad vad_; Decimator decimator_; Accumulator accumulator_; BlockingQueue<std::vector<int16_t>> vad_jobs_; BlockingQueue<std::vector<int16_t>> monitor_queue_; std::thread vad_thread_;
+#ifdef KWS_AVAILABLE
+  std::unique_ptr<kws::Runtime> kws_runtime_;
+  std::unique_ptr<BlockingQueue<std::vector<int16_t>>> kws_jobs_;
+  std::thread kws_thread_;
+  std::atomic<bool> kws_discontinuity_{false};
+  std::atomic<std::uint64_t> kws_dropped_blocks_{0};
+#endif
+  std::vector<int16_t> enhance_remainder_, vad_remainder_; Child child_; bool closed_ = false;
 };
 
 }  // namespace

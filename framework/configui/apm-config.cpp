@@ -223,9 +223,20 @@ bool ValidateApmConfig(const AppConfig& c, std::string* error);
 
 bool ValidateAppConfig(const AppConfig& c, std::string* error) {
   if (!ValidateApmConfig(c, error)) return false;
-  if (c.fastenhance.npu_core != 0 || c.vad.npu_core != 0 ||
+  if (c.fastenhance.npu_core != 0 || c.kws.npu_core != 0 ||
+      c.vad.npu_core != 0 ||
       c.asr.npu_core != 1 || c.hojo_tts.npu_core != 1) {
-    *error = "FastEnhance/TEN-VAD must use NPU1; SenseVoice/Hojo must use the NPU2 slot";
+    *error = "FastEnhance/KWS/TEN-VAD must use NPU1; SenseVoice/Hojo must use the NPU2 slot";
+    return false;
+  }
+  if (c.kws.model_path.empty() || c.kws.frontend_path.empty() ||
+      c.kws.labels_path.empty() || c.kws.output_file.empty() ||
+      c.kws.input_buffer_ms < 10 || c.kws.input_buffer_ms > 10000 ||
+      !std::isfinite(c.kws.threshold) || c.kws.threshold < 0.0f ||
+      c.kws.threshold > 1.0f || c.kws.stable_frames < 1 ||
+      c.kws.stable_frames > 50 || c.kws.cooldown_ms < 1 ||
+      c.kws.cooldown_ms > 60000) {
+    *error = "KWS paths/buffering/filter values are invalid";
     return false;
   }
   if (c.vad.hop_ms <= 0 || c.vad.hop_ms > 100 || c.vad.threshold < 0.0f ||
@@ -405,6 +416,10 @@ bool LoadAppConfig(const std::string& path,
       "fastenhance.enabled", "fastenhance.model_path",
       "fastenhance.library", "fastenhance.npu_core",
       "fastenhance.monitor_enabled",
+      "kws.enabled", "kws.model_path", "kws.frontend_path",
+      "kws.labels_path", "kws.output_file", "kws.npu_core",
+      "kws.input_buffer_ms", "kws.threshold", "kws.stable_frames",
+      "kws.cooldown_ms",
       "vad.enabled", "vad.model_path", "vad.library", "vad.npu_core",
       "vad.input_buffer_ms", "vad.hop_ms", "vad.threshold", "vad.min_speech_ms",
       "vad.min_segment_seconds", "vad.max_segment_seconds",
@@ -491,6 +506,16 @@ bool LoadAppConfig(const std::string& path,
   GET_OPTIONAL_STRING("fastenhance.library", c->fastenhance.library);
   GET_NUM("fastenhance.npu_core", c->fastenhance.npu_core);
   GET_BOOL("fastenhance.monitor_enabled", c->fastenhance.monitor_enabled);
+  GET_BOOL("kws.enabled", c->kws.enabled);
+  GET_STRING("kws.model_path", c->kws.model_path);
+  GET_STRING("kws.frontend_path", c->kws.frontend_path);
+  GET_STRING("kws.labels_path", c->kws.labels_path);
+  GET_STRING("kws.output_file", c->kws.output_file);
+  GET_NUM("kws.npu_core", c->kws.npu_core);
+  GET_NUM("kws.input_buffer_ms", c->kws.input_buffer_ms);
+  GET_NUM("kws.threshold", c->kws.threshold);
+  GET_NUM("kws.stable_frames", c->kws.stable_frames);
+  GET_NUM("kws.cooldown_ms", c->kws.cooldown_ms);
   GET_BOOL("vad.enabled", c->vad.enabled);
   GET_STRING("vad.model_path", c->vad.model_path);
   GET_OPTIONAL_STRING("vad.library", c->vad.library);

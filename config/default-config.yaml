@@ -48,6 +48,17 @@ fastenhance:
   npu_core: 0
   monitor_enabled: true
   library: build/libfastenhance.so
+kws:
+  enabled: true
+  model_path: models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel
+  frontend_path: models-for-asr-chain/kws/artifacts/ax650/frontend.bin
+  labels_path: models-for-asr-chain/kws/artifacts/ax650/labels.txt
+  output_file: /tmp/ax-audio-sdk/kws.txt
+  npu_core: 0
+  input_buffer_ms: 500
+  threshold: 0.8
+  stable_frames: 3
+  cooldown_ms: 500
 vad:
   enabled: true
   model_path: models-for-asr-chain/vad/ten-vad/ten-vad.axmodel

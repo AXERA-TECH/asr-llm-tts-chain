@@ -78,6 +78,23 @@ struct AppConfig {
     bool monitor_enabled = false;
   } fastenhance;
 
+  struct Kws {
+    bool enabled = true;
+    std::string model_path =
+        "models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel";
+    std::string frontend_path =
+        "models-for-asr-chain/kws/artifacts/ax650/frontend.bin";
+    std::string labels_path =
+        "models-for-asr-chain/kws/artifacts/ax650/labels.txt";
+    std::string output_file = "/tmp/ax-audio-sdk/kws.txt";
+    int npu_core = 0;
+    // This is a lossy, non-blocking side queue. Overflow resets KWS state.
+    int input_buffer_ms = 500;
+    float threshold = 0.8f;
+    int stable_frames = 3;
+    int cooldown_ms = 500;
+  } kws;
+
   struct Vad {
     bool enabled = true;
     std::string model_path = "models-for-asr-chain/vad/ten-vad/ten-vad.axmodel";

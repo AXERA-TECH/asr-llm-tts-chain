@@ -17,6 +17,9 @@ runtime_files=(
     framework/configui/runtime-ui.py
     models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel
     models-for-asr-chain/vad/ten-vad/ten-vad.axmodel
+    models-for-asr-chain/kws/artifacts/ax650/kws_75k_npu1.axmodel
+    models-for-asr-chain/kws/artifacts/ax650/frontend.bin
+    models-for-asr-chain/kws/artifacts/ax650/labels.txt
     models-for-asr-chain/campplus/campplus.axmodel
     models-for-asr-chain/llm/qwen3-1.7b/config.json
     models-for-asr-chain/llm/qwen3-1.7b/post_config.json
