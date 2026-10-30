@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import socket
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -125,14 +127,30 @@ def latest_tts_wav(directory: Path) -> str | None:
         return None
 
 
-def read_snapshot(outputs: RuntimeOutputs) -> tuple[str, str, str, str | None]:
+def read_tts_queue(directory: Path) -> str:
+    try:
+        status = json.loads((directory / "queue-status.json").read_text())
+        age = time.time() - status["updated_unix_ms"] / 1000
+        if not status["running"] or age > 5:
+            return "TTS 已停止或状态已过期。"
+        threshold = status["threshold"] or "关闭"
+        return (
+            f"积压子帧：{status['pending_frames']}（待合成 {status['text_frames']}，"
+            f"待播放 {status['playback_frames']}）；阈值：{threshold}；"
+            f"已触发慢说提示：{status['overflows']} 次"
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return "暂无 TTS 队列状态。"
+
+
+def read_snapshot(outputs: RuntimeOutputs) -> tuple[str, str, str, str | None, str]:
     kws = _read_history(outputs.kws_log, "暂无消抖后的 KWS 识别结果。")
     asr = _read_history(outputs.asr_log, "暂无 SenseVoice 识别结果。")
     llm_content = _read_history(outputs.llm_log, "")
     llm = extract_llm_responses(llm_content) if llm_content else "暂无 Qwen3 响应结果。"
     if not llm:
         llm = "暂无 Qwen3 响应结果。"
-    return kws, asr, llm, latest_tts_wav(outputs.tts_dir)
+    return kws, asr, llm, latest_tts_wav(outputs.tts_dir), read_tts_queue(outputs.tts_dir)
 
 
 def build_ui(outputs: RuntimeOutputs, refresh_seconds: float = 1.0) -> gr.Blocks:
@@ -159,6 +177,7 @@ def build_ui(outputs: RuntimeOutputs, refresh_seconds: float = 1.0) -> gr.Blocks
             value=initial[2], lines=14, max_lines=24,
             interactive=False, autoscroll=True,
         )
+        tts_queue = gr.Textbox(label="TTS 队列积压", value=initial[4], interactive=False)
         tts_audio = gr.Audio(
             label="TTS（Hojo）最新合成音频",
             value=initial[3], type="filepath", format="wav",
@@ -167,12 +186,12 @@ def build_ui(outputs: RuntimeOutputs, refresh_seconds: float = 1.0) -> gr.Blocks
         timer = gr.Timer(refresh_seconds)
         timer.tick(
             lambda: read_snapshot(outputs),
-            outputs=[kws_log, asr_log, llm_log, tts_audio],
+            outputs=[kws_log, asr_log, llm_log, tts_audio, tts_queue],
             concurrency_limit=1,
         )
         app.load(
             lambda: read_snapshot(outputs),
-            outputs=[kws_log, asr_log, llm_log, tts_audio],
+            outputs=[kws_log, asr_log, llm_log, tts_audio, tts_queue],
         )
     return app
 

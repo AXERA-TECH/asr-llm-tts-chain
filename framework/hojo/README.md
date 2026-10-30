@@ -31,9 +31,11 @@ Cell n+1: ASR → ...
 
 当前导出模型的运行接口需要 LM 完成后取得全部音频 token/hidden states，再运行
 `fine_local`、decoder 和 ISTFT，尚未提供可直接使用的增量 PCM 解码接口。
-因此采用中英文逗号、句号、问号、感叹号、分号、冒号等标点分段合成，每段 WAV
-生成后立即转换并送入播放队列，再合成下一段。无标点文本最多积累 100 个 Unicode
-字符，英文在 80 字符后优先按空白断开；小数点不会拆开数字，末尾无标点文本也会发送。
+主管线先累积到 `hojo_tts.min_chinese_characters` 个非空白、非标点字符（默认 20），
+或 `min_english_words` 个英文单词（默认 10），再在后续中英文逗号、句号、问号、
+感叹号、分号、冒号等标点处切片。英文缩写中的撇号和小数点不会增加单词数。
+无标点文本一直等到当前回复结束，末尾不足阈值的内容也会整段发送，不会强行从半句切开。
+每段 WAV 生成后立即转换并送入播放队列，再合成下一段。
 这属于分段流式播放，不保证段间无停顿或连续韵律。
 
 Qwen 输出期间，独立准备线程接收完整文本段并发送 `PREPARE`。Qwen 结束后才执行
@@ -46,11 +48,48 @@ NPU 上的 Hojo 推理。`llm.stream_tokens` 只控制日志；启用 TTS 后仍
 非零容量达到上限时会产生背压。`keep_wav` 对每个分段生效，`latest-*.wav` 指向
 最新成功生成的分段，便于现有运行页面试听。
 
+`hojo_tts.backlog_threshold` 是独立的积压保护阈值，默认 8，`0` 关闭保护。
+统计包含当前待合成/正在合成的子帧和播放队列中尚未播放完的子帧。严格超过阈值时，
+清空准备队列和待播放音频，取消当前回复的剩余子帧，播放所选语言/音色的慢说提示。
+下一条 LLM 回复恢复正常处理。准备线程中已开始的请求通过代次检查失效，
+Qwen 结束后统一清理 runner 缓存，保持 NPU2 推理串行。
+`output_dir/queue-status.json` 每 200 ms 原子更新，运行页面显示积压数、阈值和超限次数。
+
+在开发板上预制全部 15 个音色的提示音：
+
+```bash
+.venv/bin/python scripts/generate-tts-notices.py
+# 只生成当前选定音色，例如：
+.venv/bin/python scripts/generate-tts-notices.py --voices 7 13
+```
+
+英文音色 `0–12` 生成 “Please speak more slowly, I can’t keep up.”，
+中文音色 `13–14` 生成“请慢点说，我跟不上了。”，保存在 `notice_dir/en-<voice>.wav`
+和 `notice_dir/zh-<voice>.wav`。生成工具复用 NPU2 锁，已存在的有效 WAV 默认跳过。
+缓存缺失时，主管线会在 Qwen 完成后合成并缓存提示音；缓存齐全时超限立即插入播放。
+
 开发机回归测试（使用真实调度/管道协议和模拟模型，不需要 AX650）：
 
 ```bash
 python framework/hojo/tests/run_cell_tests.py
 ```
+
+真实模型验证程序位于 `tests/board_bugfix_test.cpp`，会使用现有运行配置，验证
+中英文预制提示、音频积压清理、超限后恢复、ASR 过滤和中英翻译/助手输出。
+在开发机交叉编译，再将产物复制到开发板 `/tmp`，从 SDK 根目录运行：
+
+```bash
+aarch64-linux-gnu-g++ -std=c++17 -O1 -ffunction-sections -fdata-sections \
+  -Iframework -Idriver/ns/include -Idriver/vad/include \
+  -Idriver/asr/sensevoice/include -Idriver/campplus/include \
+  framework/hojo/tests/board_bugfix_test.cpp framework/configui/apm-config.cpp \
+  -Wl,--gc-sections -pthread -ldl -o build/board-bugfix-test
+# 板端；先停止运行中的主管线，以免重复加载模型：
+LD_LIBRARY_PATH=build:/soc/lib:/opt/lib OMP_NUM_THREADS=1 \
+  /tmp/asr-bugfix-board-test config/sdk-config.yaml
+```
+
+验证程序把输出写入 `/tmp/asr-bugfix-board-validation`，不修改运行配置。
 
 ## 音色说明
 
@@ -82,7 +121,7 @@ Hojo 模型共提供 15 个固定音色，索引范围为 `0–14`。英文音�
 分段，包含中文字符时选择 `chinese_voice`，否则选择 `english_voice`。
 语言判断和音色路由由主管线完成，Hojo 常驻进程只接收已选定的音色索引。
 
-构建产物只有 `build/hojo-tts-resident`。生产部署不包含测试程序、试听 WAV、
+构建产物只有 `build/hojo-tts-resident`。生产部署可携带预制慢说提示 WAV，不包含测试程序、其他试听 WAV、
 一次性运行器或开发机上的编译源码。
 
 Hojo 必须使用 `driver/tts/hojo/third_party/ax-llm` 中的固定基线

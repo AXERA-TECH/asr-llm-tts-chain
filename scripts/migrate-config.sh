@@ -22,6 +22,61 @@ if [[ ! -f "${CONFIG_PATH}" || -L "${CONFIG_PATH}" ]]; then
     exit 1
 fi
 
+# Add the ASR filter and TTS backlog controls without replacing board audio,
+# voice or generation settings. Only the obsolete factory assistant prompt
+# is upgraded; a user-written system prompt is preserved.
+temporary="$(mktemp "${CONFIG_PATH}.migrate.XXXXXX")"
+trap 'rm -f "${temporary}"' EXIT
+awk '
+  function wanted(section, key) {
+    return (section == "llm" && (key == "min_asr_characters" || key == "max_asr_punctuation_ratio")) ||
+      (section == "hojo_tts" && (key == "min_chinese_characters" || key == "min_english_words" ||
+        key == "backlog_threshold" || key == "notice_dir"))
+  }
+  function flush(section, i, key) {
+    for (i = 1; i <= counts[section]; ++i) {
+      key = keys[section, i]
+      if (!seen[section, key]) print defaults[section, key]
+    }
+  }
+  FNR == NR {
+    if ($0 ~ /^[a-z_]+:[[:space:]]*$/) { section = $0; sub(/:.*/, "", section) }
+    if ($0 ~ /^  [a-z_]+:/) {
+      key = $1; sub(/:$/, "", key)
+      if (wanted(section, key)) {
+        keys[section, ++counts[section]] = key
+        defaults[section, key] = $0
+      }
+      if (section == "llm" && key == "system_prompt") system_prompt = $0
+    }
+    next
+  }
+  FNR == 1 { section = "" }
+  /^[a-z_]+:[[:space:]]*$/ {
+    flush(section)
+    section = $0; sub(/:.*/, "", section)
+  }
+  /^  [a-z_]+:/ {
+    key = $1; sub(/:$/, "", key)
+    seen[section, key] = 1
+  }
+  section == "llm" && /^  system_prompt: *"?你是一个乐于助人的助手。"? *$/ {
+    if (system_prompt != "") { print system_prompt; next }
+  }
+  { print }
+  END { flush(section) }
+' "${DEFAULT_CONFIG}" "${CONFIG_PATH}" >"${temporary}"
+if ! cmp -s "${CONFIG_PATH}" "${temporary}"; then
+    backup="${CONFIG_PATH}.pre-runtime-fixes.bak"
+    [[ -e "${backup}" ]] || cp -p -- "${CONFIG_PATH}" "${backup}"
+    chmod --reference="${CONFIG_PATH}" "${temporary}"
+    mv -f -- "${temporary}" "${CONFIG_PATH}"
+    echo "已补齐 ASR/TTS 配置并更新旧版默认提示词：${CONFIG_PATH}（备份：${backup}）"
+else
+    rm -f -- "${temporary}"
+fi
+trap - EXIT
+
 # Older deployments predate KWS. Preserve all board-specific values and only
 # insert the complete top-level KWS section from the current default config.
 if grep -q '^kws:[[:space:]]*$' "${CONFIG_PATH}"; then

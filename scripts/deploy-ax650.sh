@@ -39,6 +39,7 @@ deploy_items=(
     scripts/clean-history.sh
     scripts/migrate-config.sh
     scripts/start-ui.sh
+    scripts/generate-tts-notices.py
     README.md
     .python-version
     pyproject.toml
@@ -87,6 +88,15 @@ done
 
 sensevoice_model="models-for-asr-chain/asr/sensevoice/sensevoice.axmodel"
 deploy_items+=("${sensevoice_model}")
+
+# Notices can be generated on the board or synced back to the host. Include
+# available cached WAVs in incremental deployments; missing ones are optional.
+for voice in {0..14}; do
+    language=en
+    ((voice < 13)) || language=zh
+    notice="models-for-asr-chain/tts/hojo/notices/${language}-${voice}.wav"
+    [[ ! -f "${SDK_DIR}/${notice}" ]] || deploy_items+=("${notice}")
+done
 
 manifest_file="$(mktemp)"
 changed_file="$(mktemp)"

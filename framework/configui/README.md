@@ -38,6 +38,8 @@ python3 framework/configui/apm-config-ui.py --config config/sdk-config.yaml --po
 页面保存采用临时文件、`fsync` 和原子替换。运行中的处理链不热加载，保存后
 重启 `build/audio-pipeline` 或板端服务生效。Hojo 页会分别限制英文音色为
 `0–12`、中文音色为 `13–14`。
+Qwen3 页可设置 ASR 字符数和标点/符号占比阈值；Hojo 页可设置每片最少字/词数、
+积压子帧阈值和慢说提示音目录。运行状态页同时显示待合成、待播放子帧和超限次数。
 
 如果提示端口占用，说明对应页面已经启动或端口被其他程序使用。可直接访问
 现有页面，或者指定新端口，例如：

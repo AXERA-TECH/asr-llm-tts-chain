@@ -62,7 +62,8 @@ if '--server' in sys.argv:
                 continue
             with wave.open(output, 'wb') as wav:
                 wav.setparams((1, 2, 24000, 0, 'NONE', 'NONE'))
-                wav.writeframes(struct.pack('<240h', *([100] * 240)))
+                sample = 222 if text.startswith(('Please speak more slowly', '请慢点说')) else 100
+                wav.writeframes(struct.pack('<240h', *([sample] * 240)))
         elif op == 'CLEAR':
             cache.clear()
         else:
@@ -81,12 +82,24 @@ else:
         size = read_exact(4)
         if size is None:
             break
-        assert read_exact(struct.unpack('=I', size)[0]) is not None
+        prompt = read_exact(struct.unpack('=I', size)[0]).decode()
+        if scenario == 'translation_zh':
+            assert '你是翻译引擎，不是助手。' in prompt
+            assert '以下内容翻译成中文：test input' in prompt
+        if scenario == 'translation_en':
+            assert 'You are a translation engine, not an assistant.' in prompt
+            assert 'translate the following text into English：你好世界朋友' in prompt
         count += 1
         assert_cell_locked()
         event(f'QBEGIN {count}')
         (root / 'qwen-active').touch()
         text = '[zh]你好，世界' if count == 1 else '[en]Hello,world'
+        if scenario == 'translation_zh':
+            text = '你好，世界'
+        if scenario == 'translation_en':
+            text = 'Hello,world'
+        if scenario in ('overflow_zh', 'overflow_en', 'overflow_fallback') and count == 1:
+            text = '[en]One,two,three,four.' if scenario == 'overflow_en' else '[zh]你好，世界，再见，朋友。'
         if scenario in ('error', 'disconnect', 'empty', 'prepare_error', 'synth_error') and count == 1:
             text = 'partial,'
         if scenario == 'mismatch' and count == 1:
@@ -94,11 +107,18 @@ else:
         if scenario != 'disabled':
             assert '--stream-tokens' in sys.argv
             previous = (root / 'events').read_text().count('PREPARE ')
-            frame('T', text)
+            remainder = ''
+            initial = text
+            if scenario in ('overflow_zh', 'overflow_en', 'overflow_fallback') and count == 1:
+                boundary = text.find(',') + 1 if scenario == 'overflow_en' else text.find('，') + 1
+                initial, remainder = text[:boundary], text[boundary:]
+            frame('T', initial)
             deadline = time.monotonic() + 5
-            while (root / 'events').read_text().count('PREPARE ') == previous:
+            while not (scenario == 'overflow_audio' and count == 2) and (root / 'events').read_text().count('PREPARE ') == previous:
                 assert time.monotonic() < deadline, 'tokenizer did not overlap Qwen'
                 time.sleep(.005)
+            if remainder:
+                frame('T', remainder)
         (root / 'qwen-active').unlink()
         event(f'QDONE {count}')
         if scenario == 'disconnect' and count == 1:

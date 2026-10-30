@@ -283,6 +283,9 @@ bool ValidateAppConfig(const AppConfig& c, std::string* error) {
       !std::isfinite(c.llm.presence_penalty) ||
       c.llm.presence_penalty < -2.0f || c.llm.presence_penalty > 2.0f ||
       c.llm.queue_capacity < 0 ||
+      c.llm.min_asr_characters < 0 ||
+      !std::isfinite(c.llm.max_asr_punctuation_ratio) ||
+      c.llm.max_asr_punctuation_ratio <= 0.0f || c.llm.max_asr_punctuation_ratio > 1.0f ||
       !thinking_modes.count(c.llm.thinking_mode)) {
     *error = "Qwen3 model/loading/generation values are invalid";
     return false;
@@ -293,6 +296,8 @@ bool ValidateAppConfig(const AppConfig& c, std::string* error) {
       c.hojo_tts.chinese_voice < 13 || c.hojo_tts.chinese_voice > 14 ||
       c.hojo_tts.max_new_tokens <= 0 ||
       c.hojo_tts.max_new_tokens > 2175 || c.hojo_tts.queue_capacity < 0 ||
+      c.hojo_tts.min_chinese_characters <= 0 || c.hojo_tts.min_english_words <= 0 ||
+      c.hojo_tts.backlog_threshold < 0 || c.hojo_tts.notice_dir.empty() ||
       !std::isfinite(c.hojo_tts.playback_gain) ||
       c.hojo_tts.playback_gain < 0.0f || c.hojo_tts.playback_gain > 4.0f) {
     *error = "Hojo TTS paths/voices/generation/playback values are invalid";
@@ -432,6 +437,7 @@ bool LoadAppConfig(const std::string& path,
       "asr.library", "asr.npu_core", "asr.worker_threads",
       "llm.enabled", "llm.model_path", "llm.runner", "llm.system_prompt",
       "llm.translation_mode", "llm.zh_to_en_prompt", "llm.en_to_zh_prompt",
+      "llm.min_asr_characters", "llm.max_asr_punctuation_ratio",
       "llm.dynamic_load", "llm.dynamic_load_pool_size",
       "llm.memory_guard", "llm.memory_guard_floor_mb", "llm.max_tokens",
       "llm.temperature", "llm.top_p", "llm.top_k",
@@ -443,6 +449,8 @@ bool LoadAppConfig(const std::string& path,
       "hojo_tts.english_voice", "hojo_tts.chinese_voice",
       "hojo_tts.max_new_tokens",
       "hojo_tts.queue_capacity", "hojo_tts.keep_wav",
+      "hojo_tts.min_chinese_characters", "hojo_tts.min_english_words",
+      "hojo_tts.backlog_threshold", "hojo_tts.notice_dir",
       "hojo_tts.output_dir", "hojo_tts.playback_gain", "hojo_tts.npu_core",
       "output.temp_dir", "output.text_file", "output.mp3_dir",
       "output.max_mp3_storage_mb", "output.mp3_encoder",
@@ -550,6 +558,8 @@ bool LoadAppConfig(const std::string& path,
   GET_BOOL("llm.translation_mode", c->llm.translation_mode);
   GET_STRING("llm.zh_to_en_prompt", c->llm.zh_to_en_prompt);
   GET_STRING("llm.en_to_zh_prompt", c->llm.en_to_zh_prompt);
+  GET_NUM("llm.min_asr_characters", c->llm.min_asr_characters);
+  GET_NUM("llm.max_asr_punctuation_ratio", c->llm.max_asr_punctuation_ratio);
   GET_BOOL("llm.dynamic_load", c->llm.dynamic_load);
   GET_NUM("llm.dynamic_load_pool_size", c->llm.dynamic_load_pool_size);
   GET_BOOL("llm.memory_guard", c->llm.memory_guard);
@@ -574,6 +584,10 @@ bool LoadAppConfig(const std::string& path,
   GET_NUM("hojo_tts.chinese_voice", c->hojo_tts.chinese_voice);
   GET_NUM("hojo_tts.max_new_tokens", c->hojo_tts.max_new_tokens);
   GET_NUM("hojo_tts.queue_capacity", c->hojo_tts.queue_capacity);
+  GET_NUM("hojo_tts.min_chinese_characters", c->hojo_tts.min_chinese_characters);
+  GET_NUM("hojo_tts.min_english_words", c->hojo_tts.min_english_words);
+  GET_NUM("hojo_tts.backlog_threshold", c->hojo_tts.backlog_threshold);
+  GET_STRING("hojo_tts.notice_dir", c->hojo_tts.notice_dir);
   GET_BOOL("hojo_tts.keep_wav", c->hojo_tts.keep_wav);
   GET_STRING("hojo_tts.output_dir", c->hojo_tts.output_dir);
   GET_NUM("hojo_tts.playback_gain", c->hojo_tts.playback_gain);

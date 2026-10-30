@@ -362,7 +362,7 @@ audio-pipeline（C++）
 | VAD | `driver/vad/lib/libten_vad.so` | 在 NPU1 分区进行语音/静音判断。 |
 | ASR | `driver/asr/sensevoice` + `libax_asr_api.so` | 管线通过共享库直接调用 SenseVoice，绑定 NPU2（BIG 双核）。 |
 | LLM | `driver/llm` + `models-for-asr-chain/llm/qwen3-1.7b` | 可选的 Qwen3-1.7B AX650/NPU2 worker。在当前 Cell 内处理 ASR 净文本，token 输出同时触发 Hojo CPU 预分词；worker 空闲时不卸载模型。 |
-| TTS | `driver/tts/hojo` + `models-for-asr-chain/tts/hojo` | 可选的 Hojo-TTS-Light-40M AX650/NPU2。按标点分段，提前缓存 tokenizer/embedding 结果，Qwen 结束后逐段推理并立即送入 ALSA 播放队列。 |
+| TTS | `driver/tts/hojo` + `models-for-asr-chain/tts/hojo` | 可选的 Hojo-TTS-Light-40M AX650/NPU2。达到最少字/词数后在标点处分段，提前缓存 tokenizer/embedding 结果，Qwen 结束后逐段推理并立即送入 ALSA 播放队列。支持积压保护和慢说提示。 |
 | 说话人 | `driver/campplus` + `models-for-asr-chain/campplus/campplus.axmodel` | 可选的 AX650 NPU1 CAMPPlus 流式 embedding；每 0.75 s 采样一次，话段结束后聚类并持久化 SpeakerTable。VAD 拼接点用于净化跨拼接点的 embedding 窗口，并校正二次语音分割边界。 |
 | 配置 | `framework/configui`、`config/sdk-config.yaml` | 一个 YAML 配置源；页面保存采用临时文件和原子替换。`audio-pipeline` 解析全量配置，`run-alsa-apm` 只解析 `audio`、`buffers`、`apm` 和必要的 `runtime` 字段。 |
 
@@ -664,6 +664,7 @@ cd /opt/ax-audio-sdk
 运行状态页面。状态页面默认监听 `0.0.0.0:7862`，读取同一份配置中的输出路径，显示
 消抖后的 KWS 关键词（不显示 silence/unknown）、
 全部 SenseVoice 识别历史、全部 Qwen3 响应历史，以及 Hojo 最新合成 WAV 的播放器。
+TTS 队列状态显示待合成、待播放子帧数，以及积压阈值和慢说提示触发次数。
 局域网访问地址为 `http://<板端IP>:7862`。也可指定配置：
 
 ```bash
@@ -755,6 +756,22 @@ asr:
 启用 `llm.translation_mode` 后，管线只检查 ASR 裸文本的前 10 个 UTF-8 字符：其中包含
 中文字符时，在文本前附加 `llm.zh_to_en_prompt` 并为输出添加 `[en]`；否则按英文处理，
 附加 `llm.en_to_zh_prompt` 并为输出添加 `[zh]`。附加提示词可在 Gradio 页面中修改。
+两个方向还会自动附加对应语言的“只输出译文，禁止解释、分析、前缀、引号和思考过程”约束。
+非翻译模式默认使用简洁语音助手提示词。
+
+ASR 进入 LLM 前先移除元数据，再按 Unicode 统计非空白字符。只有字符数严格大于
+`llm.min_asr_characters`（默认 5），并且标点/符号占比严格小于
+`llm.max_asr_punctuation_ratio`（默认 0.5），才提交给 LLM。全角标点、引号、破折号、
+省略号、符号和 emoji 都计入标点/符号；原始 ASR 历史仍保留，丢弃原因记录在运行日志中。
+
+TTS 切片默认最少 20 字或 10 个英文单词，在达到阈值后的标点处切分，回复末尾不足阈值的
+内容整段送出。积压子帧严格超过 `hojo_tts.backlog_threshold`（默认 8，0 关闭）时，
+清空准备和待播放音频队列，丢弃本次回复余下内容，按语言和音色插入慢说提示。
+预制全部音色提示音可在板端执行 `.venv/bin/python scripts/generate-tts-notices.py`，
+详见 [分段、积压保护与提示音](framework/hojo/README.md)。
+
+增量部署的配置迁移会补齐上述新字段，并升级旧版出厂助手提示词，保留其他板端设置；
+首次迁移的旧配置保存为 `config/sdk-config.yaml.pre-runtime-fixes.bak`。
 
 话段策略：短于 `vad.min_speech_ms` 的语音毛刺会丢弃；累计达到
 `vad.min_segment_seconds` 后，尾部静音达到 `vad.trailing_silence_seconds` 即提交；达到

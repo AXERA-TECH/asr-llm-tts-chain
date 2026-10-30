@@ -141,10 +141,13 @@ struct AppConfig {
     bool enabled = false;
     std::string model_path = "models-for-asr-chain/llm/qwen3-1.7b";
     std::string runner = "build/qwen3-worker";
-    std::string system_prompt = "你是一个乐于助人的助手。";
+    std::string system_prompt = "你是一个简洁干练的语音助手，回答中禁止输出任何解释、分析、前缀、引号或思考过程，困难问题难以回答时候可以说不知道。";
     bool translation_mode = false;
     std::string zh_to_en_prompt = "translate the following text into English：";
     std::string en_to_zh_prompt = "以下内容翻译成中文：";
+    // Strict comparisons, after metadata and whitespace removal (Unicode).
+    int min_asr_characters = 5;
+    float max_asr_punctuation_ratio = 0.5f;
     bool dynamic_load = false;
     int dynamic_load_pool_size = 2;
     bool memory_guard = true;
@@ -175,6 +178,10 @@ struct AppConfig {
     int max_new_tokens = 1600;
     int queue_capacity = 0;
     bool keep_wav = false;
+    int min_chinese_characters = 20;
+    int min_english_words = 10;
+    int backlog_threshold = 8;
+    std::string notice_dir = "models-for-asr-chain/tts/hojo/notices";
     std::string output_dir = "/tmp/ax-audio-sdk/hojo-output";
     float playback_gain = 1.0f;
     int npu_core = 1;

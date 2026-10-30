@@ -140,7 +140,7 @@ def _controls_from_config(config: dict[str, Any]) -> tuple[Any, ...]:
         _value(config, "llm", "enabled", default=False),
         _value(config, "llm", "model_path", default="models-for-asr-chain/llm/qwen3-1.7b"),
         _value(config, "llm", "runner", default="build/qwen3-worker"),
-        _value(config, "llm", "system_prompt", default="你是一个乐于助人的助手。"),
+        _value(config, "llm", "system_prompt", default="你是一个简洁干练的语音助手，回答中禁止输出任何解释、分析、前缀、引号或思考过程，困难问题难以回答时候可以说不知道。"),
         _value(config, "llm", "translation_mode", default=False),
         _value(config, "llm", "zh_to_en_prompt", default="translate the following text into English："),
         _value(config, "llm", "en_to_zh_prompt", default="以下内容翻译成中文："),
@@ -175,6 +175,12 @@ def _controls_from_config(config: dict[str, Any]) -> tuple[Any, ...]:
         _value(config, "runtime", "input", default="alsa"),
         _value(config, "runtime", "input_wav", default=""),
         _value(config, "runtime", "file_input_mode", default="realtime"),
+        _value(config, "llm", "min_asr_characters", default=5),
+        _value(config, "llm", "max_asr_punctuation_ratio", default=0.5),
+        _value(config, "hojo_tts", "min_chinese_characters", default=20),
+        _value(config, "hojo_tts", "min_english_words", default=10),
+        _value(config, "hojo_tts", "backlog_threshold", default=8),
+        _value(config, "hojo_tts", "notice_dir", default="models-for-asr-chain/tts/hojo/notices"),
     )
 
 
@@ -314,12 +320,16 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
             with gr.Row():
                 llm_model = gr.Textbox(label="Qwen3 模型目录", value=_value(initial, "llm", "model_path", default="models-for-asr-chain/llm/qwen3-1.7b"))
                 llm_runner = gr.Textbox(label="常驻 Worker", value=_value(initial, "llm", "runner", default="build/qwen3-worker"))
-            llm_system = gr.Textbox(label="系统提示词", lines=4, value=_value(initial, "llm", "system_prompt", default="你是一个乐于助人的助手。"))
+            llm_system = gr.Textbox(label="系统提示词", lines=4, value=_value(initial, "llm", "system_prompt", default="你是一个简洁干练的语音助手，回答中禁止输出任何解释、分析、前缀、引号或思考过程，困难问题难以回答时候可以说不知道。"))
             llm_translation = gr.Checkbox(
                 label="翻译模式",
                 value=_value(initial, "llm", "translation_mode", default=False),
                 info="仅检查 ASR 裸文本前 10 个字符；中文翻译为英文，其他文本按英文翻译为中文。",
             )
+            with gr.Row():
+                llm_min_chars = gr.Number(label="ASR 字符数阈值（必须大于）", minimum=0, precision=0, value=_value(initial, "llm", "min_asr_characters", default=5))
+                llm_max_punct = gr.Slider(0.01, 1.0, step=0.01, label="ASR 标点/符号占比阈值（必须小于）", value=_value(initial, "llm", "max_asr_punctuation_ratio", default=0.5))
+            gr.Markdown("仅当去除元数据后的非空白字符数大于阈值、且标点/符号占比小于阈值，才交给 LLM。翻译时会自动附加对应中英文的“只输出译文”约束。")
             with gr.Row():
                 llm_zh_to_en = gr.Textbox(
                     label="中文 → 英文附加提示词",
@@ -361,7 +371,7 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
             hojo_enabled = gr.Checkbox(
                 label="启用 Hojo TTS 总开关",
                 value=_value(initial, "hojo_tts", "enabled", default=False),
-                info="Qwen 输出时按标点分段预分词，Qwen 完成后逐段合成并立即送入 ALSA 播放队列。",
+                info="达到最少中文字数/英文词数后，在后续标点处切片；整帧结束时送出剩余文本。",
             )
             with gr.Row():
                 hojo_runner = gr.Textbox(label="Hojo 常驻 runner", value=_value(initial, "hojo_tts", "runner", default="build/hojo-tts-resident"))
@@ -385,6 +395,12 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
             with gr.Row():
                 hojo_keep_wav = gr.Checkbox(label="保留 WAV 文件", value=_value(initial, "hojo_tts", "keep_wav", default=False))
                 hojo_output = gr.Textbox(label="WAV 输出目录", value=_value(initial, "hojo_tts", "output_dir", default="/tmp/ax-audio-sdk/hojo-output"))
+            with gr.Row():
+                hojo_min_zh = gr.Number(label="每片最少中文字数", minimum=1, precision=0, value=_value(initial, "hojo_tts", "min_chinese_characters", default=20))
+                hojo_min_en = gr.Number(label="每片最少英文单词数", minimum=1, precision=0, value=_value(initial, "hojo_tts", "min_english_words", default=10))
+                hojo_backlog = gr.Number(label="TTS 积压子帧阈值（0 为关闭）", minimum=0, precision=0, value=_value(initial, "hojo_tts", "backlog_threshold", default=8))
+            hojo_notices = gr.Textbox(label="慢说提示音目录", value=_value(initial, "hojo_tts", "notice_dir", default="models-for-asr-chain/tts/hojo/notices"))
+            gr.Markdown("积压数包含待合成子帧与待播放音频子帧。超过阈值后丢弃当前回复的剩余内容，清空待播放音频，并按输出语言和所选音色播放慢说提示。")
             gr.Markdown("Hojo 固定输出 24 kHz 单声道 WAV；播放前由主管线转换为 48 kHz。开启 FastEnhance 监听时，两路信号做饱和相加。")
         with gr.Row():
             reload_button = gr.Button("从磁盘重新加载")
@@ -413,7 +429,9 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                     hojo_en_voice, hojo_zh_voice, hojo_max_tokens,
                     hojo_queue, hojo_keep_wav, hojo_output,
                     hojo_gain, hojo_npu_core,
-                    input_source, input_wav, file_input_mode]
+                    input_source, input_wav, file_input_mode,
+                    llm_min_chars, llm_max_punct, hojo_min_zh, hojo_min_en,
+                    hojo_backlog, hojo_notices]
 
         def save_values(path_text: str, *values: Any) -> tuple[str, str]:
             config = _read(path_text)
@@ -482,6 +500,8 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 "queue_capacity": int(values[64]),
                 "output_file": str(values[65]).strip(),
                 "npu_lock_file": str(values[66]).strip(),
+                "min_asr_characters": int(values[81]),
+                "max_asr_punctuation_ratio": float(values[82]),
             })
             if not llm["model_path"] or not llm["runner"] or not llm["zh_to_en_prompt"] or not llm["en_to_zh_prompt"] or not llm["output_file"] or not llm["npu_lock_file"]:
                 raise gr.Error("Qwen3 模型、Worker、翻译提示词、输出文件和 NPU2 锁路径不能为空")
@@ -495,6 +515,8 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 raise gr.Error("频率惩罚和存在惩罚必须在 [-2, 2]")
             if llm["thinking_mode"] not in {"default", "enabled", "disabled"} or llm["queue_capacity"] < 0:
                 raise gr.Error("思考模式或 FIFO 容量无效")
+            if llm["min_asr_characters"] < 0 or not 0 < llm["max_asr_punctuation_ratio"] <= 1:
+                raise gr.Error("ASR 字符数阈值不能小于 0，标点占比阈值必须在 (0, 1]")
             hojo = config.setdefault("hojo_tts", {})
             hojo.pop("core", None)
             hojo.pop("keep_prompt", None)
@@ -510,6 +532,10 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 "output_dir": str(values[75]).strip(),
                 "playback_gain": float(values[76]),
                 "npu_core": int(values[77]),
+                "min_chinese_characters": int(values[83]),
+                "min_english_words": int(values[84]),
+                "backlog_threshold": int(values[85]),
+                "notice_dir": str(values[86]).strip(),
             })
             if not hojo["runner"] or not hojo["model_path"] or not hojo["output_dir"]:
                 raise gr.Error("Hojo 常驻程序、模型和输出目录不能为空")
@@ -523,6 +549,8 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 raise gr.Error("Hojo 播放增益必须在 [0, 4]，NPU 插槽必须为 1")
             if hojo["enabled"] and not llm["enabled"]:
                 raise gr.Error("启用 Hojo TTS 前必须启用 Qwen3 LLM")
+            if hojo["min_chinese_characters"] < 1 or hojo["min_english_words"] < 1 or hojo["backlog_threshold"] < 0 or not hojo["notice_dir"]:
+                raise gr.Error("TTS 切片最少字/词数必须大于 0，积压阈值不能小于 0，提示音目录不能为空")
             runtime = config.setdefault("runtime", {})
             runtime.update({
                 "input": str(values[78]),

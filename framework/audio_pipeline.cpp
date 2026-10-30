@@ -212,6 +212,11 @@ class BlockingQueue {
     not_full_.notify_one();
     return true;
   }
+  void Clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    q_.clear();
+    not_full_.notify_all();
+  }
   void Close() {
     std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
@@ -659,6 +664,11 @@ struct LlmJob {
   std::string output_prefix;
 };
 
+constexpr const char* kChineseTranslationRules =
+    "你是翻译引擎，不是助手。必须只输出译文本身。禁止输出任何解释、分析、前缀、引号或思考过程。不确定时也必须直接给出最短的译文。";
+constexpr const char* kEnglishTranslationRules =
+    "You are a translation engine, not an assistant. You must output only the translation itself. Do not output any explanation, analysis, prefix, quotation marks, or thought process. When uncertain, you must also directly provide the shortest translation.";
+
 class LlmWorker {
  public:
   LlmWorker(const apm_example::AppConfig& c,
@@ -685,17 +695,27 @@ class LlmWorker {
     std::stringstream lines(result);
     std::string line;
     while (std::getline(lines, line)) {
+      // A worker error is not transcript metadata and must never be translated.
+      if (line.rfind("[ASR_ERROR]", 0) == 0) continue;
       line = StripAsrMetadata(line);
       if (line.empty() || line.rfind("[ASR_ERROR]", 0) == 0) continue;
+      const auto stats = text_utils::AnalyzeAsr(line);
+      if (!stats.Accept(config_.min_asr_characters, config_.max_asr_punctuation_ratio)) {
+        std::cerr << "[llm] ASR discarded: characters=" << stats.characters
+                  << " punctuation_ratio=" << stats.Ratio() << "\n";
+        continue;
+      }
       LlmJob job;
       job.raw_text = std::move(line);
       job.prompt = job.raw_text;
       if (config_.translation_mode) {
         if (FirstTenCharactersContainChinese(job.raw_text)) {
-          job.prompt = config_.zh_to_en_prompt + job.raw_text;
+          job.prompt = std::string(kEnglishTranslationRules) + "\n" +
+              config_.zh_to_en_prompt + job.raw_text;
           job.output_prefix = "[en]";
         } else {
-          job.prompt = config_.en_to_zh_prompt + job.raw_text;
+          job.prompt = std::string(kChineseTranslationRules) + "\n" +
+              config_.en_to_zh_prompt + job.raw_text;
           job.output_prefix = "[zh]";
         }
       }
@@ -836,7 +856,9 @@ class LlmWorker {
 
     std::vector<std::string> args{executable};
     AddArg(&args, "--model", AbsolutePath(config_.model_path));
-    AddArg(&args, "--system", config_.system_prompt);
+    AddArg(&args, "--system", config_.translation_mode ?
+        std::string(kChineseTranslationRules) + "\n" + kEnglishTranslationRules :
+        config_.system_prompt);
     if (config_.dynamic_load) args.emplace_back("--dynamic-load");
     AddArg(&args, "--dynamic-pool", std::to_string(config_.dynamic_load_pool_size));
     if (!config_.memory_guard) args.emplace_back("--no-memory-guard");
@@ -972,23 +994,38 @@ class PlaybackMixer {
   void AppendTts(std::vector<int16_t> samples) {
     if (samples.empty()) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    tts_.insert(tts_.end(), samples.begin(), samples.end());
+    tts_.push_back(std::move(samples));
+  }
+
+  void ClearTts() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    tts_.clear();
+    offset_ = 0;
+  }
+
+  std::size_t PendingFrames() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return tts_.size();
   }
 
   void Mix(std::vector<int16_t>* monitor, bool monitor_enabled) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (int16_t& sample : *monitor) {
       const int base = monitor_enabled ? sample : 0;
-      const int tts = tts_.empty() ? 0 : tts_.front();
-      if (!tts_.empty()) tts_.pop_front();
+      const int tts = tts_.empty() ? 0 : tts_.front()[offset_++];
+      if (!tts_.empty() && offset_ == tts_.front().size()) {
+        tts_.pop_front();
+        offset_ = 0;
+      }
       sample = static_cast<int16_t>(
           std::max(-32768, std::min(32767, base + tts)));
     }
   }
 
  private:
-  std::mutex mutex_;
-  std::deque<int16_t> tts_;
+  mutable std::mutex mutex_;
+  std::deque<std::vector<int16_t>> tts_;
+  std::size_t offset_ = 0;
 };
 
 uint16_t ReadLe16(const unsigned char* input) {
@@ -1079,9 +1116,11 @@ bool LoadWavForPlayback(const fs::path& path, float gain,
 class HojoTtsWorker {
  public:
   HojoTtsWorker(const apm_example::AppConfig& c,
-                std::function<void(std::vector<int16_t>)> playback)
+                std::function<void(std::vector<int16_t>)> playback,
+                PlaybackMixer* mixer = nullptr)
       : config_(c.hojo_tts),
         playback_(std::move(playback)),
+        mixer_(mixer),
         jobs_(static_cast<std::size_t>(
             std::max(0, c.hojo_tts.queue_capacity))) {
     if (!config_.enabled) return;
@@ -1102,6 +1141,15 @@ class HojoTtsWorker {
     }
     active_ = true;
     thread_ = std::thread([this] { Loop(); });
+    status_thread_ = std::thread([this] {
+      std::unique_lock<std::mutex> lock(status_mutex_);
+      while (!status_stopped_) {
+        PublishStatus();
+        status_cv_.wait_for(lock, std::chrono::milliseconds(200),
+                            [this] { return status_stopped_; });
+      }
+      PublishStatus();
+    });
     std::cerr << "[hojo] streaming text preparation queue is ready\n";
   }
 
@@ -1115,12 +1163,14 @@ class HojoTtsWorker {
     raw_stream_.clear();
     head_.clear();
     head_done_ = false;
-    chunks_ = HojoTextChunks{};
+    overloaded_ = notice_played_ = false;
+    chunks_ = NewChunks();
   }
 
   void Token(const std::string& delta) {
     if (!active_) return;
     raw_stream_ += delta;
+    if (overloaded_) return;
     Feed(delta, false);
   }
 
@@ -1128,24 +1178,36 @@ class HojoTtsWorker {
     if (!active_) return;
     // Qwen's final decode is authoritative, including when it revises a
     // streamed prefix or a worker emits only a final response.
-    if (!success || final_text != raw_stream_) {
+    if (!overloaded_ && (!success || final_text != raw_stream_)) {
+      ++generation_;
+      jobs_.Clear();
       WaitPrepared();
       Command("CLEAR");
       prepared_.clear();
-      chunks_ = HojoTextChunks{};
+      pending_ = 0;
       prefix_ = requested_prefix_;
+      chunks_ = NewChunks();
       head_.clear();
       head_done_ = false;
       if (success) Feed(final_text, true);
-    } else {
+    } else if (!overloaded_) {
       Feed("", true);
     }
     WaitPrepared();
-    if (success) {
-      for (const auto& chunk : prepared_) SynthesizeChunk(chunk);
+    if (overloaded_) {
+      Command("CLEAR");
+      prepared_.clear();
+      pending_ = 0;
+      if (!notice_played_) PlayNotice(notice_voice_, true);
+    } else if (success) {
+      for (const auto& chunk : prepared_) {
+        SynthesizeChunk(chunk);
+        --pending_;
+      }
     }
     Command("CLEAR");
     prepared_.clear();
+    pending_ = 0;
   }
 
   void Close() {
@@ -1153,6 +1215,12 @@ class HojoTtsWorker {
     closed_ = true;
     jobs_.Close();
     if (thread_.joinable()) thread_.join();
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      status_stopped_ = true;
+    }
+    status_cv_.notify_all();
+    if (status_thread_.joinable()) status_thread_.join();
     if (server_in_ >= 0) close(server_in_);
     if (server_out_ >= 0) close(server_out_);
     server_in_ = server_out_ = -1;
@@ -1165,6 +1233,84 @@ class HojoTtsWorker {
   }
 
  private:
+  HojoTextChunks NewChunks() const {
+    return HojoTextChunks(config_.min_chinese_characters,
+                          config_.min_english_words, prefix_);
+  }
+
+  std::size_t Backlog() const {
+    return pending_.load() + (mixer_ ? mixer_->PendingFrames() : 0);
+  }
+
+  void PublishStatus() const {
+    const fs::path path = fs::path(config_.output_dir) / "queue-status.json";
+    const fs::path temporary = path.string() + ".tmp";
+    const auto text = pending_.load();
+    const auto audio = mixer_ ? mixer_->PendingFrames() : 0;
+    {
+      std::ofstream out(temporary);
+      out << "{\"pending_frames\":" << text + audio
+          << ",\"text_frames\":" << text << ",\"playback_frames\":" << audio
+          << ",\"threshold\":" << config_.backlog_threshold
+          << ",\"overflows\":" << overflows_.load()
+          << ",\"running\":" << (status_stopped_ ? "false" : "true")
+          << ",\"updated_unix_ms\":"
+          << std::chrono::duration_cast<std::chrono::milliseconds>(
+                 WallClock::now().time_since_epoch()).count() << "}\n";
+      if (!out) return;
+    }
+    std::error_code ec;
+    fs::rename(temporary, path, ec);
+  }
+
+  bool PlayNotice(int voice, bool allow_synthesis) {
+    const bool chinese = voice >= 13;
+    const fs::path wav = fs::path(config_.notice_dir) /
+        (std::string(chinese ? "zh-" : "en-") + std::to_string(voice) + ".wav");
+    std::vector<int16_t> samples;
+    std::string error;
+    if (!LoadWavForPlayback(wav, config_.playback_gain, &samples, &error)) {
+      if (!allow_synthesis) return false;
+      // Only reached after Qwen has released the NPU. Cache missing notices
+      // so subsequent overloads can play immediately without inference.
+      std::error_code ec;
+      fs::create_directories(config_.notice_dir, ec);
+      const auto id = ++sequence_;
+      const std::string text = chinese ? "请慢点说，我跟不上了。" :
+          "Please speak more slowly, I can’t keep up.";
+      std::ostringstream request;
+      request << "SYNTH " << id << ' ' << config_.max_new_tokens << ' '
+              << std::quoted(AbsolutePath(wav.string()));
+      if (!Command("PREPARE " + std::to_string(id) + " " +
+                   std::to_string(voice) + " " + text) ||
+          !Command(request.str()) ||
+          !LoadWavForPlayback(wav, config_.playback_gain, &samples, &error)) {
+        std::cerr << "[hojo] cannot play slow-down notice: " << error << "\n";
+        return false;
+      }
+    }
+    if (playback_) playback_(std::move(samples));
+    PublishLatestWav(wav);
+    notice_played_ = true;
+    return true;
+  }
+
+  void Overflow(int voice) {
+    overloaded_ = true;
+    notice_voice_ = voice;
+    ++overflows_;
+    ++generation_;
+    jobs_.Clear();
+    pending_ = 0;
+    chunks_ = NewChunks();
+    if (mixer_) mixer_->ClearTts();
+    // PREPARE may be in flight on the CPU. Defer server CLEAR until the
+    // preparation barrier in Finish; generation checks suppress stale work.
+    PlayNotice(voice, false);
+    std::cerr << "[hojo] backlog exceeded " << config_.backlog_threshold
+              << "; discarded pending text/audio; notice voice=" << voice << "\n";
+  }
+
   static bool ContainsChinese(const std::string& text) {
     std::size_t offset = 0;
     while (offset < text.size()) {
@@ -1292,6 +1438,7 @@ class HojoTtsWorker {
         if (prefix_.empty()) prefix_ = head_.substr(0, 4);
         head_.erase(0, 4);
       }
+      chunks_ = NewChunks();
       delta = std::move(head_);
       head_done_ = true;
     }
@@ -1299,14 +1446,28 @@ class HojoTtsWorker {
       const bool chinese = prefix_ == "[zh]" ||
           (prefix_.empty() && ContainsChinese(text));
       const PreparedChunk chunk{++sequence_, chinese ? config_.chinese_voice : config_.english_voice};
+      ++pending_;
+      if (config_.backlog_threshold > 0 &&
+          Backlog() > static_cast<std::size_t>(config_.backlog_threshold)) {
+        Overflow(chunk.voice);
+        break;
+      }
       std::replace(text.begin(), text.end(), '\r', ' ');
       std::replace(text.begin(), text.end(), '\n', ' ');
-      jobs_.Push([this, chunk, text = std::move(text)] {
-        if (Command("PREPARE " + std::to_string(chunk.id) + " " +
-                    std::to_string(chunk.voice) + " " + text))
+      const auto generation = generation_.load();
+      jobs_.Push([this, chunk, generation, text = std::move(text)] {
+        if (generation != generation_.load()) return;
+        const bool success = Command("PREPARE " + std::to_string(chunk.id) + " " +
+                                     std::to_string(chunk.voice) + " " + text);
+        if (generation != generation_.load()) return;
+        if (success)
           prepared_.push_back(chunk);
-        else
+        else {
+          // Overflow may reset the count after the generation check above.
+          auto pending = pending_.load();
+          while (pending && !pending_.compare_exchange_weak(pending, pending - 1)) {}
           std::cerr << "[hojo] preparation failed: chunk=" << chunk.id << "\n";
+        }
       });
     }
   }
@@ -1412,12 +1573,21 @@ class HojoTtsWorker {
 
   apm_example::AppConfig::HojoTts config_;
   std::function<void(std::vector<int16_t>)> playback_;
+  PlaybackMixer* mixer_ = nullptr;
+  std::atomic<std::size_t> pending_{0}, overflows_{0};
+  std::atomic<uint64_t> generation_{0};
   BlockingQueue<std::function<void()>> jobs_;
   std::vector<PreparedChunk> prepared_;
   HojoTextChunks chunks_;
   std::string prefix_, requested_prefix_, raw_stream_, head_;
   bool head_done_ = false;
+  bool overloaded_ = false, notice_played_ = false;
+  int notice_voice_ = 9;
   std::thread thread_;
+  std::thread status_thread_;
+  std::mutex status_mutex_;
+  std::condition_variable status_cv_;
+  bool status_stopped_ = false;
   std::string executable_;
   pid_t server_pid_ = -1;
   int server_in_ = -1;
@@ -1431,9 +1601,10 @@ class ResultWorker {
  public:
   ResultWorker(const apm_example::AppConfig& c,
                Npu2CellArbiter* npu2_arbiter,
-               std::function<void(std::vector<int16_t>)> playback)
+               std::function<void(std::vector<int16_t>)> playback,
+               PlaybackMixer* mixer = nullptr)
       : c_(c), npu2_arbiter_(npu2_arbiter),
-        hojo_(c, std::move(playback)),
+        hojo_(c, std::move(playback), mixer),
         asr_(c),
         llm_(c,
              [this](const std::string& prefix) { hojo_.Begin(prefix); },
@@ -1601,7 +1772,7 @@ class Pipeline {
         results_(config_, &npu2_arbiter_,
                  [this](std::vector<int16_t> samples) {
                    playback_mixer_.AppendTts(std::move(samples));
-                 }),
+                 }, &playback_mixer_),
         enhancer_(config_, &arbiter_), vad_(config_, &arbiter_),
         accumulator_(config_, &arbiter_,
                      [this](Segment s) { results_.Submit(std::move(s)); }),
