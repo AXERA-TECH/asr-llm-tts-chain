@@ -2,8 +2,8 @@
 set -euo pipefail
 SDK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${HOST:-0.0.0.0}"
-MAIN_PORT="${MAIN_PORT:-7860}"
-APM_PORT="${APM_PORT:-7861}"
+MAIN_PORT="${MAIN_PORT:-7870}"
+APM_PORT="${APM_PORT:-7871}"
 CONFIG="${CONFIG:-${SDK_DIR}/config/sdk-config.yaml}"
 port_available() {
   PORT_TO_CHECK="$1" python3 - <<'PY'
