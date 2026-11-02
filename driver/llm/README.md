@@ -18,6 +18,6 @@ The normal SDK build compiles the worker. To build it directly:
 ```bash
 cmake -S driver/llm -B build/qwen3-worker-cmake \
   -DCMAKE_TOOLCHAIN_FILE=driver/llm/toolchains/ax650-aarch64.cmake \
-  -DAX650_SDK_DIR=/path/to/board_sdk
+  -DAX8850_SDK_DIR=/path/to/board_sdk
 cmake --build build/qwen3-worker-cmake --target qwen3-worker -j2
 ```

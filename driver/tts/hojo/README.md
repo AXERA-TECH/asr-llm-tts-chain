@@ -18,7 +18,7 @@ Qwen3 使用 `driver/llm/third_party/ax-llm`，两套运行时位于不同可执
 ```bash
 cmake -S driver/tts/hojo -B build/hojo-tts-cmake \
   -DCMAKE_TOOLCHAIN_FILE="$PWD/driver/tts/hojo/toolchains/ax650-aarch64.cmake" \
-  -DAX650_SDK_DIR=/path/to/ax650-board-sdk \
+  -DAX8850_SDK_DIR=/path/to/ax650-board-sdk \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$PWD/build"
 cmake --build build/hojo-tts-cmake --target hojo-tts-resident -j2

@@ -68,7 +68,7 @@ Qwen 结束后统一清理 runner 缓存，保持 NPU2 推理串行。
 和 `notice_dir/zh-<voice>.wav`。生成工具复用 NPU2 锁，已存在的有效 WAV 默认跳过。
 缓存缺失时，主管线会在 Qwen 完成后合成并缓存提示音；缓存齐全时超限立即插入播放。
 
-开发机回归测试（使用真实调度/管道协议和模拟模型，不需要 AX650）：
+开发机回归测试（使用真实调度/管道协议和模拟模型，不需要 AX8850）：
 
 ```bash
 python framework/hojo/tests/run_cell_tests.py

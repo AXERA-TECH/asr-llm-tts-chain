@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main Gradio configuration page for the AX650 audio SDK.
+"""Main Gradio configuration page for the AX8850 audio SDK.
 
 The page intentionally follows the stream order.  WebRTC APM has a dedicated
 page (``apm-config-ui.py``) so its many controls remain manageable; both pages
@@ -226,8 +226,8 @@ link.title = `打开 ${{target.toString()}}`;
 
 def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
     initial = _read(str(config_path))
-    with gr.Blocks(title="AX650 音频 SDK 配置") as app:
-        gr.Markdown("# AX650 音频处理链配置\nALSA → WebRTC APM → KWS 旁路监听 → FastEnhance → 低通/16 kHz → TEN-VAD → CampPlus（可选）→ SenseVoice → Qwen3（可选）→ Hojo TTS（可选）")
+    with gr.Blocks(title="AX8850 音频 SDK 配置") as app:
+        gr.Markdown("# AX8850 音频处理链配置\nALSA → WebRTC APM → KWS 旁路监听 → FastEnhance → 低通/16 kHz → TEN-VAD → CampPlus（可选）→ SenseVoice → Qwen3（可选）→ Hojo TTS（可选）")
         path = gr.Textbox(label="统一配置文件", value=str(config_path.resolve()))
         with gr.Tab("ALSA 输入/监听"):
             input_source = gr.Radio(
@@ -295,7 +295,7 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
         with gr.Tab("CampPlus 说话人"):
             campplus_enabled = gr.Checkbox(label="启用 CampPlus 说话人识别", value=_value(initial, "campplus", "enabled", default=False))
             campplus_logging = gr.Checkbox(label="输出 CampPlus 聚类详细日志", value=_value(initial, "campplus", "logging_enabled", default=False))
-            campplus_model = gr.Textbox(label="CampPlus AX650 模型", value=_value(initial, "campplus", "model_path", default="models-for-asr-chain/campplus/campplus.axmodel"))
+            campplus_model = gr.Textbox(label="CampPlus AX8850 模型", value=_value(initial, "campplus", "model_path", default="models-for-asr-chain/campplus/campplus.axmodel"))
             speaker_table = gr.Textbox(label="长期说话人库（JSON）", value=_value(initial, "campplus", "speaker_table_path", default="/tmp/ax-audio-sdk/speakers.json"))
             with gr.Row():
                 min_cluster_size = gr.Number(label="小簇合并/过滤阈值（样本数）", value=_value(initial, "campplus", "min_cluster_size", default=4), precision=0)
@@ -565,7 +565,7 @@ def build_ui(config_path: Path, apm_port: int = 7861) -> gr.Blocks:
                 if not runtime["input_wav"]:
                     raise gr.Error("选择文件输入时必须配置测试音频文件路径")
                 # The UI commonly runs on the development host while this
-                # path belongs to the AX650 target.  Checking it here would
+                # path belongs to the AX8850 target.  Checking it here would
                 # reject valid target paths (and can raise PermissionError for
                 # /root).  audio-pipeline and run-alsa-apm perform the strict
                 # existence/format checks on the machine that consumes it.

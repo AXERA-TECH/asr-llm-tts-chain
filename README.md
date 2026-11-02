@@ -1,6 +1,6 @@
-# AX650 音频链路 SDK
+# AX8850 音频链路 SDK
 
-AX Audio SDK 是面向 AX650 板端的实时会议音频处理链路。它把 ALSA 采集、WebRTC
+AX Audio SDK 是面向 AX8850 板端的实时会议音频处理链路。它把 ALSA 采集、WebRTC
 AudioProcessing（APM）、降噪前 KWS 监听、NPU 降噪、语音活动检测（TEN-VAD）、SenseVoice 语音识别和
 音频归档、Qwen3-1.7B 文本生成和 Hojo 语音合成组合成一个可部署的工程。板端主程序是原生 C++，启动时只依赖板端动态库和
 模型；Python/Gradio 用于配置页面和随 `run-target.sh` 启动的运行状态页面。
@@ -12,7 +12,7 @@ AudioProcessing（APM）、降噪前 KWS 监听、NPU 降噪、语音活动检�
 
 ## 1. 总体架构
 
-![AX650 音频链路](images/framework.png)
+![AX8850 音频链路](images/framework.png)
 
 ## 快速开始
 ### 1. 克隆项目和模型
@@ -26,7 +26,7 @@ tar -xzf build_release.tar.gz
 
 项目已提供 AArch64 编译产物，无需在开发机编译。依赖或环境异常时，请在本文档中搜索对应关键词。
 
-### 2. 使用脚本部署到AX650
+### 2. 使用脚本部署到AX8850
 
 将板端地址和部署目录替换为实际值，在开发机执行：
 
@@ -61,8 +61,8 @@ cd /opt/ax-audio-sdk
 
 ## 详细细节
 
-下面以 Ubuntu/Debian x86_64 开发机、可通过 SSH 访问的 AX650 板卡为例。编译产物只能
-在 AArch64 AX650 板端运行。板端固件、AX Engine 动态库和编译时使用的 AX650 Board
+下面以 Ubuntu/Debian x86_64 开发机、可通过 SSH 访问的 AX8850 板卡为例。编译产物只能
+在 AArch64 AX8850 板端运行。板端固件、AX Engine 动态库和编译时使用的 AX8850 Board
 SDK 应保持同一版本，并确认板端已切换为 `BIG_LITTLE`（2+1）VNPU 模式；切换模式后
 按板端提示重启。
 
@@ -92,7 +92,7 @@ dpkg -L libasound2-dev:arm64 | grep '/libasound\.so$'
 
 交叉编译成功不代表产物一定与板端 C/C++ 运行库兼容。这里需要分别匹配两套内容：
 
-- `AX650_SDK_ROOT` 中的 AX 头文件和动态库必须匹配板端固件/驱动版本；
+- `AX8850_SDK_ROOT` 中的 AX 头文件和动态库必须匹配板端固件/驱动版本；
 - 交叉编译器和 sysroot 必须匹配板端用户态的 glibc、libstdc++ 和 ALSA ABI。
 
 先在板端检查实际环境，不要仅根据开发机发行版或 BSP 仓库名称推断：
@@ -109,13 +109,13 @@ cat /proc/ax_proc/version 2>/dev/null
 readelf -p .comment /soc/lib/libax_engine.so 2>/dev/null
 ```
 
-当前已验证的一块 AX650N 板卡环境为 Ubuntu 22.04、GCC 11.4、glibc 2.35、
+当前已验证的一块 AX8850N 板卡环境为 Ubuntu 22.04、GCC 11.4、glibc 2.35、
 `GLIBCXX_3.4.30`、ALSA 1.2.6.1 和 AX 驱动/固件 V3.10.2。其内核与 AX Engine 库由
 Arm GNU Toolchain 9.2.1 编译，但应用程序应使用与 Ubuntu 22.04 用户态兼容的 GCC 11
 交叉工具链和 Jammy ARM64 sysroot。最终产物的 `GLIBC_*`/`GLIBCXX_*` 要求不能高于
 板端提供的版本。
 
-AX650N BSP SDK `v1.45.0_p39` 自带 README 推荐 Arm GNU Toolchain 9.2-2019.12；该建议
+AX8850N BSP SDK `v1.45.0_p39` 自带 README 推荐 Arm GNU Toolchain 9.2-2019.12；该建议
 适用于与它配套的 BSP/固件，不能据此假定其 `msp/out` 动态库与更高版本板端固件兼容。
 
 确认板端确实与 `v1.45.0_p39` 配套时，按该 BSP 的说明安装工具链：
@@ -143,7 +143,7 @@ export PATH="$HOME/.local/bin:$PATH"
 uv --version
 ```
 
-### 2. 获取源码、模型和 AX650 Board SDK
+### 2. 获取源码、模型和 AX8850 Board SDK
 
 ```bash
 git clone https://github.com/AXERA-TECH/asr-llm-tts-chain.git ax-audio-sdk
@@ -166,15 +166,15 @@ uv sync --locked
 `models-for-asr-chain/tts/hojo/models/`，不能只有 Xet 指针文件。
 
 从板卡厂商提供的、与板端固件匹配的 SDK 包获取 `include/` 和 `lib/`。AX-Pi Pro
-可参考官方 [AX650N BSP SDK](https://github.com/AXERA-TECH/ax650n_bsp_sdk)；下面的版本
+可参考官方 [AX8850N BSP SDK](https://github.com/AXERA-TECH/ax650n_bsp_sdk)；下面的版本
 只是公开示例，实际项目应优先使用板端配套版本：
 
 ```bash
 mkdir -p "$HOME/opt"
 git clone --depth 1 --branch v1.45.0_p39 \
   https://github.com/AXERA-TECH/ax650n_bsp_sdk.git "$HOME/opt/ax650n_bsp_sdk"
-export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
-test -d "$AX650_SDK_ROOT/include" && test -d "$AX650_SDK_ROOT/lib"
+export AX8850_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+test -d "$AX8850_SDK_ROOT/include" && test -d "$AX8850_SDK_ROOT/lib"
 ```
 
 如果板端将配套头文件和运行库安装在 `/soc/include`、`/soc/lib`，可直接同步一份用于
@@ -185,10 +185,10 @@ test -d "$AX650_SDK_ROOT/include" && test -d "$AX650_SDK_ROOT/lib"
 mkdir -p "$HOME/opt/ax650-board-sdk"
 ssh root@192.168.1.100 'tar -C /soc -cf - include lib' \
   | tar -C "$HOME/opt/ax650-board-sdk" -xf -
-export AX650_SDK_ROOT="$HOME/opt/ax650-board-sdk"
+export AX8850_SDK_ROOT="$HOME/opt/ax650-board-sdk"
 
 # 至少对比三个核心库；本地和板端结果必须一致。
-sha256sum "$AX650_SDK_ROOT"/lib/libax_{engine,interpreter,sys}.so
+sha256sum "$AX8850_SDK_ROOT"/lib/libax_{engine,interpreter,sys}.so
 ssh root@192.168.1.100 'sha256sum /soc/lib/libax_{engine,interpreter,sys}.so'
 ```
 
@@ -197,7 +197,7 @@ ssh root@192.168.1.100 'sha256sum /soc/lib/libax_{engine,interpreter,sys}.so'
 使用明确的 SDK 和 ARM64 ALSA 库路径执行整体构建：
 
 ```bash
-export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+export AX8850_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
 export ALSA_INCLUDE_DIR=/usr/include
 export ALSA_LIBRARY=/usr/lib/aarch64-linux-gnu/libasound.so
 CC=aarch64-linux-gnu-gcc \
@@ -209,7 +209,7 @@ CXX=aarch64-linux-gnu-g++ \
 
 ```bash
 export PATH="$HOME/opt/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/bin:$PATH"
-export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+export AX8850_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
 export CROSS_SYSROOT=/path/to/aarch64-sysroot
 # ALSA_SYSROOT 默认继承 CROSS_SYSROOT；也可单独指向另一个含 ALSA 的 sysroot。
 CC=aarch64-none-linux-gnu-gcc \
@@ -220,7 +220,7 @@ CXX=aarch64-none-linux-gnu-g++ \
 Ubuntu 22.04/GCC 11 板端对应的命令形式为：
 
 ```bash
-export AX650_SDK_ROOT=/path/to/sdk-synced-from-board-soc
+export AX8850_SDK_ROOT=/path/to/sdk-synced-from-board-soc
 export CROSS_SYSROOT=/path/to/ubuntu-jammy-arm64-sysroot
 CC=aarch64-linux-gnu-gcc-11 \
 CXX=aarch64-linux-gnu-g++-11 \
@@ -244,19 +244,19 @@ file build/audio-pipeline build/run-alsa-apm build/qwen3-worker build/hojo-tts-r
 readelf --version-info build/audio-pipeline | grep -oE 'GLIBC(X{2})?_[0-9.]+' | sort -Vu
 readelf --version-info build/qwen3-worker | grep -oE 'GLIBC(X{2})?_[0-9.]+' | sort -Vu
 
-# 在 AX650 板端执行
+# 在 AX8850 板端执行
 getconf GNU_LIBC_VERSION
 strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 2>/dev/null \
   | grep -oE 'GLIBCXX_[0-9.]+' | sort -Vu | tail -n 1
 ```
 
 若 `build.sh` 显示 `skipped run-alsa-apm`，说明 ALSA 头文件或 `ALSA_LIBRARY` 不正确；
-若显示 `skipped AX650 runtime components`，说明 `AX650_SDK_ROOT` 下缺少 `include/` 或
+若显示 `skipped AX8850 runtime components`，说明 `AX8850_SDK_ROOT` 下缺少 `include/` 或
 `lib/`。这两种情况都不能部署完整实时链路。
 
 ### 4. 准备板端并部署
 
-首次部署前，先在 AX650 板端安装 ALSA 工具、MP3 编码器和 `uv`。以下命令假定以
+首次部署前，先在 AX8850 板端安装 ALSA 工具、MP3 编码器和 `uv`。以下命令假定以
 `root` 登录，因此不使用 `sudo`：
 
 ```bash
@@ -326,11 +326,11 @@ cd /opt/ax-audio-sdk
 | --- | --- | --- |
 | `scripts/build.sh` | 开发机 | 交叉编译主管线、ALSA/APM 前端、FastEnhance、Qwen3 和 Hojo 生产组件，产物写入 `build/`。 |
 | `scripts/deploy-ax650.sh` | 开发机 | 通过 SSH 增量部署生产白名单，校验文件并在板端执行依赖检查。 |
-| `scripts/migrate-config.sh` | 开发机或 AX650 板端 | 保留已有板端配置，只为旧版本补齐缺失的 KWS 配置段并创建备份。 |
-| `scripts/check-target-deps.sh` | AX650 板端 | 检查生产二进制、动态库、全部模型、`uv`、ALSA、播放工具和 MP3 编码器。 |
-| `scripts/start-ui.sh` | 开发机或 AX650 板端 | 启动主配置页（默认 `7860`）和 APM 配置页（默认 `7861`）；只修改 YAML，不启动音频链路。 |
-| `scripts/run-target.sh` | AX650 板端 | 设置运行时动态库路径，启动 C++ 主管线及状态页（默认 `7862`），并统一处理退出信号。 |
-| `scripts/clean-history.sh` | AX650 板端 | 删除配置所指向的转录、LLM、TTS、临时音频、MP3 和说话人历史；不删除模型与配置。 |
+| `scripts/migrate-config.sh` | 开发机或 AX8850 板端 | 保留已有板端配置，只为旧版本补齐缺失的 KWS 配置段并创建备份。 |
+| `scripts/check-target-deps.sh` | AX8850 板端 | 检查生产二进制、动态库、全部模型、`uv`、ALSA、播放工具和 MP3 编码器。 |
+| `scripts/start-ui.sh` | 开发机或 AX8850 板端 | 启动主配置页（默认 `7860`）和 APM 配置页（默认 `7861`）；只修改 YAML，不启动音频链路。 |
+| `scripts/run-target.sh` | AX8850 板端 | 设置运行时动态库路径，启动 C++ 主管线及状态页（默认 `7862`），并统一处理退出信号。 |
+| `scripts/clean-history.sh` | AX8850 板端 | 删除配置所指向的转录、LLM、TTS、临时音频、MP3 和说话人历史；不删除模型与配置。 |
 
 ### 组件边界
 
@@ -357,13 +357,13 @@ audio-pipeline（C++）
 | --- | --- | --- |
 | 设备/前端 | `driver/alsa_briage/run-alsa-apm` | 打开 ALSA、按 10 ms 调度、运行 WebRTC APM；`--stdout` 时向标准输出提供处理后的采集流。 |
 | 管线编排 | `framework/audio_pipeline.cpp` | 连接子进程、调度 FastEnhance/VAD/ASR、管理话段和退出冲刷。 |
-| 降噪 | `driver/ns` + `libfastenhance.so` | AX650 NPU1（LITTLE 单核）上的 48 kHz 实时增强。 |
+| 降噪 | `driver/ns` + `libfastenhance.so` | AX8850 NPU1（LITTLE 单核）上的 48 kHz 实时增强。 |
 | KWS | `driver/kws` + `models-for-asr-chain/kws` | 降噪前的 75k 外部状态流式监听；在独立低优先级线程使用 NPU1 小核，有界队列拥塞时丢弃 KWS 旧帧并重置状态，主管线从不等待。 |
 | VAD | `driver/vad/lib/libten_vad.so` | 在 NPU1 分区进行语音/静音判断。 |
 | ASR | `driver/asr/sensevoice` + `libax_asr_api.so` | 管线通过共享库直接调用 SenseVoice，绑定 NPU2（BIG 双核）。 |
-| LLM | `driver/llm` + `models-for-asr-chain/llm/qwen3-1.7b` | 可选的 Qwen3-1.7B AX650/NPU2 worker。在当前 Cell 内处理 ASR 净文本，token 输出同时触发 Hojo CPU 预分词；worker 空闲时不卸载模型。 |
-| TTS | `driver/tts/hojo` + `models-for-asr-chain/tts/hojo` | 可选的 Hojo-TTS-Light-40M AX650/NPU2。达到最少字/词数后在标点处分段，提前缓存 tokenizer/embedding 结果，Qwen 结束后逐段推理并立即送入 ALSA 播放队列。支持积压保护和慢说提示。 |
-| 说话人 | `driver/campplus` + `models-for-asr-chain/campplus/campplus.axmodel` | 可选的 AX650 NPU1 CAMPPlus 流式 embedding；每 0.75 s 采样一次，话段结束后聚类并持久化 SpeakerTable。VAD 拼接点用于净化跨拼接点的 embedding 窗口，并校正二次语音分割边界。 |
+| LLM | `driver/llm` + `models-for-asr-chain/llm/qwen3-1.7b` | 可选的 Qwen3-1.7B AX8850/NPU2 worker。在当前 Cell 内处理 ASR 净文本，token 输出同时触发 Hojo CPU 预分词；worker 空闲时不卸载模型。 |
+| TTS | `driver/tts/hojo` + `models-for-asr-chain/tts/hojo` | 可选的 Hojo-TTS-Light-40M AX8850/NPU2。达到最少字/词数后在标点处分段，提前缓存 tokenizer/embedding 结果，Qwen 结束后逐段推理并立即送入 ALSA 播放队列。支持积压保护和慢说提示。 |
+| 说话人 | `driver/campplus` + `models-for-asr-chain/campplus/campplus.axmodel` | 可选的 AX8850 NPU1 CAMPPlus 流式 embedding；每 0.75 s 采样一次，话段结束后聚类并持久化 SpeakerTable。VAD 拼接点用于净化跨拼接点的 embedding 窗口，并校正二次语音分割边界。 |
 | 配置 | `framework/configui`、`config/sdk-config.yaml` | 一个 YAML 配置源；页面保存采用临时文件和原子替换。`audio-pipeline` 解析全量配置，`run-alsa-apm` 只解析 `audio`、`buffers`、`apm` 和必要的 `runtime` 字段。 |
 
 AX Engine 以 `BIG_LITTLE`（2+1）模式初始化。KWS、FastEnhance 和 TEN-VAD 使用 affinity
@@ -399,7 +399,7 @@ KWS 从 WebRTC APM 输出、FastEnhance 降噪输入之前旁路取音，在独�
 
 替换模型时必须同步更新以下三个文件，不能只替换 `.axmodel`：
 
-- `kws.model_path`：AX650 `BIG_LITTLE (2+1)` 模式下为 NPU1 小核编译的外部状态 AXModel。
+- `kws.model_path`：AX8850 `BIG_LITTLE (2+1)` 模式下为 NPU1 小核编译的外部状态 AXModel。
 - `kws.frontend_path`：与训练时完全一致的窗函数、Mel、DCT 和归一化系数 `frontend.bin`。
 - `kws.labels_path`：逐行标签文件；前两行必须是 `_silence_`、`_unknown_`，其余顺序必须
   与模型输出维度一致。
@@ -432,7 +432,7 @@ APM 的 reverse stream。Hojo 的 24 kHz 单声道输出会转成 48 kHz；开�
 |    |--- ns/                          # FastEnhance C API、源码和 NPU1 构建脚本
 |    |--- vad/                         # TEN-VAD 头文件和动态库
 |    |--- asr/
-|    |    |--- sensevoice/             # AX650 ASR 适配库和头文件
+|    |    |--- sensevoice/             # AX8850 ASR 适配库和头文件
 |    |--- llm/                          # Qwen3 runner、常驻 worker 与 AX-LLM 源码
 |    |--- tts/hojo/                     # Hojo tokenizer/板端适配器源码
 |    |    |--- third_party/ax-llm/       # Hojo 专用固定版本 ax-llm
@@ -454,7 +454,7 @@ APM 的 reverse stream。Hojo 的 24 kHz 单声道输出会转成 48 kHz；开�
 
 ## 3. 输入硬件
 
-音频采集支持符合标准 USB Audio Class（UAC）协议的设备。设备通过 AX650 的 USB
+音频采集支持符合标准 USB Audio Class（UAC）协议的设备。设备通过 AX8850 的 USB
 接口接入后，由 ALSA 负责枚举和采集；SDK 不要求厂商专用 SDK 或额外的 USB 驱动。
 常见可用设备包括：
 
@@ -486,14 +486,14 @@ arecord -D hw:2,0 -f S16_LE -r 48000 -c 1 -d 3 /tmp/uac-test.wav
 ### 主机侧准备
 
 - Linux 主机、CMake、Make 和与板端固件 ABI 匹配的 AArch64 交叉编译器（脚本默认
-  名称为 `aarch64-linux-gnu-g++`；AX650N BSP `v1.45.0_p39` 推荐 GCC 9.2-2019.12）。
+  名称为 `aarch64-linux-gnu-g++`；AX8850N BSP `v1.45.0_p39` 推荐 GCC 9.2-2019.12）。
 - 目标板 sysroot 中的 ALSA 头文件和 ARM64 `libasound.so`，用于生成
   `run-alsa-apm`；不能链接开发机的 x86_64 ALSA 库。
-- AX650 Board SDK（包含 `include/`、`lib/`），用于生成 FastEnhance、Qwen3 和
+- AX8850 Board SDK（包含 `include/`、`lib/`），用于生成 FastEnhance、Qwen3 和
   Hojo 运行组件。
 
 APM 预编译库已位于 `driver/apm`。没有 ALSA sysroot 时，构建脚本会跳过
-`run-alsa-apm`；没有有效 `AX650_SDK_ROOT` 时会跳过 AX650 运行组件。两种情况都只是
+`run-alsa-apm`；没有有效 `AX8850_SDK_ROOT` 时会跳过 AX8850 运行组件。两种情况都只是
 部分构建，不能视为完整实时链路编译成功。
 
 ### Hojo 专用 ax-llm（强制版本）
@@ -508,7 +508,7 @@ Hojo 常驻版必须使用下面这套源码与补丁：
 | 必需补丁 | `driver/tts/hojo/third_party/patches/ax-llm-core.patch` |
 | 补丁 SHA-256 | `29791565b7b40be48d93865a6e0fa9736762a509f77f29cb3b09e5406df70338` |
 
-补丁修改 `LLM.cpp`、`LLM.hpp` 和 AX650 model runner，实现 Hojo 所需的生成 token、
+补丁修改 `LLM.cpp`、`LLM.hpp` 和 AX8850 model runner，实现 Hojo 所需的生成 token、
 隐藏状态及 KV Cache 重置接口。缺少补丁或使用其他 ax-llm 基线时，程序可能仍能成功
 加载并生成 WAV，但实际音频会成为错乱语音或杂声；这不是可忽略的 ABI 警告。
 
@@ -548,14 +548,14 @@ git -C driver/tts/hojo/third_party/ax-llm status --short
 cd ax-audio-sdk
 
 # 推荐显式指定板端 SDK、完整 sysroot 和 C/C++ 编译器；版本以板端用户态为准
-AX650_SDK_ROOT=/path/to/ax650-board-sdk \
+AX8850_SDK_ROOT=/path/to/ax650-board-sdk \
 CROSS_SYSROOT=/path/to/aarch64-sysroot \
 CC=aarch64-linux-gnu-gcc-11 \
 CXX=aarch64-linux-gnu-g++-11 \
 ./scripts/build.sh
 
 # 若编译器自带且能自动定位 sysroot，只需另行提供 ALSA sysroot
-AX650_SDK_ROOT=/path/to/ax650-board-sdk \
+AX8850_SDK_ROOT=/path/to/ax650-board-sdk \
 ALSA_SYSROOT=/path/to/aarch64-sysroot-with-alsa \
 CC=aarch64-none-linux-gnu-gcc \
 CXX=aarch64-none-linux-gnu-g++ \
@@ -573,12 +573,12 @@ CXX=aarch64-none-linux-gnu-g++ \
 FastEnhance 也可以单独重建：
 
 ```bash
-AX650_SDK_ROOT=/path/to/ax650-board-sdk \
+AX8850_SDK_ROOT=/path/to/ax650-board-sdk \
 CROSS_SYSROOT=/path/to/aarch64-sysroot \
 CXX=aarch64-linux-gnu-g++ ./driver/ns/build-fastenhance.sh
 ```
 
-## 5. AX650 板端部署
+## 5. AX8850 板端部署
 
 ### 自动部署（推荐）
 
@@ -870,5 +870,5 @@ DRY_RUN=1 ./scripts/clean-history.sh
 - SenseVoice、Qwen3 与 Hojo 共用 NPU2，按 Cell 串行推理。CPU 预分词可以与 Qwen 并行，
   TTS 的 NPU 推理仍要等当前 Qwen 完成；分段播放可能存在段间停顿。长回复会增加下一
   Cell 的等待时间，配置有限队列容量时满队列会产生背压。
-- `driver/asr/sensevoice` 中的 `libax_asr_api.so` 与 AX650 运行时 ABI 绑定，只能在匹配的
+- `driver/asr/sensevoice` 中的 `libax_asr_api.so` 与 AX8850 运行时 ABI 绑定，只能在匹配的
   AArch64 板端环境使用。

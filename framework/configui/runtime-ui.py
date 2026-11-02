@@ -157,9 +157,9 @@ def build_ui(outputs: RuntimeOutputs, refresh_seconds: float = 1.0) -> gr.Blocks
     if refresh_seconds <= 0:
         raise ValueError("刷新间隔必须大于 0 秒")
     initial = read_snapshot(outputs)
-    with gr.Blocks(title="AX650 模型运行状态") as app:
+    with gr.Blocks(title="AX8850 模型运行状态") as app:
         gr.Markdown(
-            "# AX650 模型运行状态\n"
+            "# AX8850 模型运行状态\n"
             f"每 {refresh_seconds:g} 秒自动刷新；文字区域保留全部历史，TTS 仅显示最新 WAV。"
         )
         kws_log = gr.Textbox(
