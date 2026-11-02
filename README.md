@@ -31,7 +31,7 @@ tar -xzf build_release.tar.gz
 将板端地址和部署目录替换为实际值，在开发机执行：
 
 ```bash
-TARGET=root@192.168.1.100 TARGET_DIR=/opt/ax-audio-sdk ./scripts/deploy-ax650.sh
+TARGET=root@192.168.1.100 TARGET_DIR=/opt/ax-audio-sdk ./scripts/deploy-ax8850.sh
 ```
 
 ### 3. 查看并配置音频设备
@@ -277,7 +277,7 @@ uv --version
 ssh-copy-id root@192.168.1.100
 TARGET=root@192.168.1.100 \
 TARGET_DIR=/opt/ax-audio-sdk \
-./scripts/deploy-ax650.sh
+./scripts/deploy-ax8850.sh
 ```
 
 脚本只传输变更的生产文件和模型，并在板端校验大小、SHA-256、动态库及运行依赖。
@@ -325,7 +325,7 @@ cd /opt/ax-audio-sdk
 | 脚本 | 执行位置 | 用途 |
 | --- | --- | --- |
 | `scripts/build.sh` | 开发机 | 交叉编译主管线、ALSA/APM 前端、FastEnhance、Qwen3 和 Hojo 生产组件，产物写入 `build/`。 |
-| `scripts/deploy-ax650.sh` | 开发机 | 通过 SSH 增量部署生产白名单，校验文件并在板端执行依赖检查。 |
+| `scripts/deploy-ax8850.sh` | 开发机 | 通过 SSH 增量部署生产白名单，校验文件并在板端执行依赖检查。 |
 | `scripts/migrate-config.sh` | 开发机或 AX8850 板端 | 保留已有板端配置，只为旧版本补齐缺失的 KWS 配置段并创建备份。 |
 | `scripts/check-target-deps.sh` | AX8850 板端 | 检查生产二进制、动态库、全部模型、`uv`、ALSA、播放工具和 MP3 编码器。 |
 | `scripts/start-ui.sh` | 开发机或 AX8850 板端 | 启动主配置页（默认 `7860`）和 APM 配置页（默认 `7861`）；只修改 YAML，不启动音频链路。 |
@@ -582,7 +582,7 @@ CXX=aarch64-linux-gnu-g++ ./driver/ns/build-fastenhance.sh
 
 ### 自动部署（推荐）
 
-`scripts/deploy-ax650.sh` 只处理生产运行白名单，并用文件大小和 SHA-256 比较
+`scripts/deploy-ax8850.sh` 只处理生产运行白名单，并用文件大小和 SHA-256 比较
 开发机与板端文件；已存在且内容相同的模型不会重复传输。变更文件先写入板端同目录
 的临时文件，校验成功后再原子替换，传输中断不会破坏原文件。部署完成后会在板端
 执行依赖检查。默认目标为 `root@10.126.29.18`，目标目录为 `/root/asr-chain`，均可
@@ -592,24 +592,24 @@ CXX=aarch64-linux-gnu-g++ ./driver/ns/build-fastenhance.sh
 ```bash
 TARGET=root@192.168.1.20 \
 TARGET_DIR=/opt/ax-audio-sdk \
-./scripts/deploy-ax650.sh
+./scripts/deploy-ax8850.sh
 ```
 
 使用密码登录时可提供 `SSH_PASSWORD`（更推荐配置 SSH 公钥）：
 
 ```bash
-SSH_PASSWORD='***' TARGET=root@192.168.1.20 ./scripts/deploy-ax650.sh
+SSH_PASSWORD='***' TARGET=root@192.168.1.20 ./scripts/deploy-ax8850.sh
 ```
 
 只有明确需要用开发机配置覆盖板端配置时才使用：
 
 ```bash
-DEPLOY_CONFIG=replace SSH_PASSWORD='***' ./scripts/deploy-ax650.sh
+DEPLOY_CONFIG=replace SSH_PASSWORD='***' ./scripts/deploy-ax8850.sh
 ```
 
 ### 手动部署
 
-建议直接使用 `scripts/deploy-ax650.sh` 的生产白名单。手动部署时不要遗漏以下
+建议直接使用 `scripts/deploy-ax8850.sh` 的生产白名单。手动部署时不要遗漏以下
 运行时文件：
 
 ```text
@@ -791,7 +791,7 @@ uv sync
 代理时需要的 `socksio`），均已通过 `uv add` 写入 `pyproject.toml` 并锁定在
 `uv.lock`。迁移环境时复制这两个文件后执行 `uv sync` 即可复现最小可运行环境。
 
-`scripts/deploy-ax650.sh` 会把配置页面所需文件按主机端相同的相对目录部署到板端
+`scripts/deploy-ax8850.sh` 会把配置页面所需文件按主机端相同的相对目录部署到板端
 （`scripts/start-ui.sh`、`pyproject.toml`、`uv.lock`、`.python-version`、
 `framework/configui/apm-config-ui.py`、`framework/configui/sdk-config-ui.py`、
 `framework/configui/runtime-ui.py`）。
