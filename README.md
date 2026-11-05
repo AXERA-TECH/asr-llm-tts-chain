@@ -15,38 +15,83 @@ AudioProcessing（APM）、降噪前 KWS 监听、NPU 降噪、语音活动检�
 ![AX8850 音频链路](images/framework.png)
 
 ## 快速开始
+
+以下命令以 Ubuntu/Debian x86_64 开发机和可通过 SSH 访问的 AX8850 板端为例。
+仓库仅保留最新的预编译包，直接解压即可部署，无需在开发机重新编译或安装交叉编译依赖。
+修改源码或需要适配其他板端环境时，再按「详细细节」第 1–3 节自行编译。
+
 ### 1. 克隆项目和模型
 
 ```bash
 git clone https://github.com/AXERA-TECH/asr-llm-tts-chain.git ax-audio-sdk
 cd ax-audio-sdk
+
+# 模型包含大文件；先安装 Git Xet，再克隆到固定目录名。
+curl --proto '=https' --tlsv1.2 -sSf \
+  https://raw.githubusercontent.com/huggingface/xet-core/refs/heads/main/git_xet/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+git xet install
 git clone https://huggingface.co/AXERA-TECH/models-for-asr-chain
-tar -xzf build_release.tar.gz
 ```
 
-项目已提供 AArch64 编译产物，无需在开发机编译。依赖或环境异常时，请在本文档中搜索对应关键词。
+克隆完成后确认存在 `models-for-asr-chain/asr/sensevoice/sensevoice.axmodel`、
+`models-for-asr-chain/llm/qwen3-1.7b/` 和 `models-for-asr-chain/tts/hojo/models/`，
+模型必须是完整文件，不能只有 Xet 指针文件。
 
-### 2. 使用脚本部署到AX8850
+### 2. 解压预编译包
 
-将板端地址和部署目录替换为实际值，在开发机执行：
+预编译包位于项目根目录，命名规则为
+`build_release_<YYYYMMDD-HHMMSS>_<12位Git提交号>.tar.gz`。日期时间为开发机本地时区的
+编译完成时间；构建时存在已跟踪文件的未提交修改，Git 提交号后会附加 `-dirty`。
+由于只保留最新包，可直接使用通配符解压：
+
+```bash
+tar -xzf build_release_*.tar.gz
+cat build/VERSION
+```
+
+解压后，`build/` 中包含 `audio-pipeline`、`run-alsa-apm`、`libfastenhance.so`、
+`qwen3-worker` 和 `hojo-tts-resident` 五个生产产物，以及记录源码版本和构建日期的
+`VERSION`。模型仍需按第 1 步单独下载，板端运行环境需与预编译产物兼容。
+
+### 3. 准备板端并部署到 AX8850
+
+先登录板端安装运行依赖（以下按 `root` 登录，无需 `sudo`）：
+
+```bash
+ssh root@192.168.1.100
+apt-get update
+apt-get install -y alsa-utils ca-certificates curl lame python3
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+uv --version
+exit
+```
+
+`uv` 需在部署前安装到 `/usr/local/bin`，部署脚本的非交互 SSH 会话也需要找到它。
+回到开发机项目根目录，将板端地址和部署目录替换为实际值后执行：
 
 ```bash
 TARGET=root@192.168.1.100 TARGET_DIR=/opt/ax-audio-sdk ./scripts/deploy-ax8850.sh
 ```
 
-### 3. 查看并配置音频设备
+### 4. 查看并配置音频设备
 
-登录板端并启动配置页面：
+登录板端，首次同步 Python 3.12 环境和页面依赖，再启动配置页面：
 
 ```bash
 ssh root@192.168.1.100
 cd /opt/ax-audio-sdk
+uv sync --locked
+./scripts/check-target-deps.sh
+arecord -l
+aplay -l
 ./scripts/start-ui.sh
 ```
 
-在局域网浏览器访问 `http://<板端IP>:7860`，按实际的采集和播放设备保存配置。
+在局域网浏览器访问 `http://<板端IP>:7870`（APM 子页面为 `7871`），按实际的采集和
+播放设备保存配置。优先使用 `hw:CARD=<声卡名>,DEV=0` 绑定设备，参见「输入硬件」。
 
-### 4. 使用脚本开启运行
+### 5. 使用脚本开启运行
 
 在板端另一个终端执行：
 
@@ -55,9 +100,14 @@ cd /opt/ax-audio-sdk
 ./scripts/run-target.sh
 ```
 
-运行日志和识别结果可在 `http://<板端IP>:7862` 查看。
+默认配置下，日志出现 `ASR -> Qwen3 -> Hojo TTS chain is ready` 表示链路就绪，
+运行日志和识别结果可在 `http://<板端IP>:7862` 查看。`run-target.sh` 默认启用状态页，
+缺少 `uv` 时会在启动主管线前退出；只运行主管线可用
+`RUNTIME_UI_ENABLED=0 ./scripts/run-target.sh`。
 
-
+运行环境要求见「详细细节」的环境表，板端准备和运行说明见第 4–5 节；第 1–3 节的
+交叉编译依赖和步骤仅在自行编译时需要。KWS 默认开启，示例权重仅供链路验证；
+仅需 ASR/LLM/TTS 时建议设 `kws.enabled: false`，详见「已知限制与后续方向」。
 
 ## 详细细节
 
@@ -67,6 +117,28 @@ SDK 应保持同一版本，并确认板端已切换为 `BIG_LITTLE`（2+1）VNP
 按板端提示重启。
 
 ### 1. 准备开发机
+
+使用预编译包部署时，无需安装本节的交叉编译依赖；解压步骤见「快速开始」第 2 步，
+随后按第 4–5 节准备板端、部署并运行。以下开发机构建步骤供自行编译时使用。
+
+开发机构建要求与板端运行基线如下；板端版本是已验证环境，其他环境需核对 ABI 兼容性：
+
+| 环境 | 组件 | 要求 / 已验证基线 | 依据 |
+| --- | --- | --- | --- |
+| 开发机 | CMake | ≥ 3.16 | `driver/tts/hojo/CMakeLists.txt`、`driver/llm/CMakeLists.txt` |
+| 开发机 / 板端页面 | Python | ≥ 3.12；项目 `.python-version` 固定为 3.12，可由 `uv` 管理 | `pyproject.toml`、`.python-version` |
+| 开发机 / 板端页面 | uv | 配置页及默认启用的运行状态页必需；同步依赖用 `uv sync --locked` | `scripts/start-ui.sh`、`scripts/run-target.sh` |
+| 开发机 | AArch64 GCC / g++ | Ubuntu 22.04 板端使用 GCC 11.x 与 Jammy ARM64 sysroot；其他环境按用户态匹配 | 下方工具链说明与板端 GCC 11.4 基线 |
+| 开发机 | 交叉编译依赖 | ARM64 libc 开发头文件、libgcc、Linux UAPI 头文件和 binutils（如 `libc6-dev-arm64-cross`、`libgcc-11-dev-arm64-cross`、`linux-libc-dev-arm64-cross`、`binutils-aarch64-linux-gnu`） | 完整的 GCC / g++ 交叉工具链与 sysroot |
+| 开发机 | ALSA 开发包 | ARM64 `alsa/asoundlib.h` 与 `libasound.so` | `libasound2-dev:arm64` 或板端配套 sysroot |
+| 板端 | 系统 / glibc | 已验证 Ubuntu 22.04 / glibc 2.35；产物所需 GLIBC 版本不得高于板端 | `/etc/os-release`、`getconf GNU_LIBC_VERSION` |
+| 板端 | libstdc++ | 已验证提供到 `GLIBCXX_3.4.30`；产物所需版本不得高于板端 | `libstdc++.so.6` |
+| 板端 | ALSA | 已验证 1.2.6.1（arm64）；采集/播放检查需 `alsa-utils` | `libasound2`、`arecord`、`aplay` |
+| 板端 | 系统 Python | 启动配置页的端口检查需要可用的 `python3`；页面本身使用 uv 的 Python 3.12 | `scripts/start-ui.sh` |
+| 开发机 / 板端 | AX 运行时 | Board SDK 须与板端固件配套，板端需 `/soc/lib`，核心库建议按 SHA-256 对齐 | `libax_sys.so`、`libax_engine.so`、`libax_interpreter.so` |
+
+产物依赖 AX 动态库；版本不符可能表现为 `dlopen` 失败或段错误，日志不一定直接提示
+版本问题。配套 SDK 的获取与 SHA-256 对比见第 2 节。
 
 安装 Git、CMake、AArch64 交叉编译器及 ARM64 ALSA 开发包。下面是 Ubuntu/Debian
 Multi-Arch 的便捷方案：
@@ -90,9 +162,13 @@ cmake --version
 dpkg -L libasound2-dev:arm64 | grep '/libasound\.so$'
 ```
 
+若遇到 `bits/wordsize.h` 缺失、汇编器 `as: not found` 等错误，先检查 ARM64 libc、
+libgcc、Linux UAPI 头文件与 binutils 是否齐全，并核对 sysroot 和编译器版本；
+不要混用不同发行版的交叉开发包。
+
 交叉编译成功不代表产物一定与板端 C/C++ 运行库兼容。这里需要分别匹配两套内容：
 
-- `AX8850_SDK_ROOT` 中的 AX 头文件和动态库必须匹配板端固件/驱动版本；
+- `AX650_SDK_ROOT` 中的 AX 头文件和动态库必须匹配板端固件/驱动版本；
 - 交叉编译器和 sysroot 必须匹配板端用户态的 glibc、libstdc++ 和 ALSA ABI。
 
 先在板端检查实际环境，不要仅根据开发机发行版或 BSP 仓库名称推断：
@@ -173,8 +249,8 @@ uv sync --locked
 mkdir -p "$HOME/opt"
 git clone --depth 1 --branch v1.45.0_p39 \
   https://github.com/AXERA-TECH/ax650n_bsp_sdk.git "$HOME/opt/ax650n_bsp_sdk"
-export AX8850_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
-test -d "$AX8850_SDK_ROOT/include" && test -d "$AX8850_SDK_ROOT/lib"
+export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+test -d "$AX650_SDK_ROOT/include" && test -d "$AX650_SDK_ROOT/lib"
 ```
 
 如果板端将配套头文件和运行库安装在 `/soc/include`、`/soc/lib`，可直接同步一份用于
@@ -185,19 +261,20 @@ test -d "$AX8850_SDK_ROOT/include" && test -d "$AX8850_SDK_ROOT/lib"
 mkdir -p "$HOME/opt/ax650-board-sdk"
 ssh root@192.168.1.100 'tar -C /soc -cf - include lib' \
   | tar -C "$HOME/opt/ax650-board-sdk" -xf -
-export AX8850_SDK_ROOT="$HOME/opt/ax650-board-sdk"
+export AX650_SDK_ROOT="$HOME/opt/ax650-board-sdk"
 
 # 至少对比三个核心库；本地和板端结果必须一致。
-sha256sum "$AX8850_SDK_ROOT"/lib/libax_{engine,interpreter,sys}.so
+sha256sum "$AX650_SDK_ROOT"/lib/libax_{engine,interpreter,sys}.so
 ssh root@192.168.1.100 'sha256sum /soc/lib/libax_{engine,interpreter,sys}.so'
 ```
 
 ### 3. 交叉编译
 
-使用明确的 SDK 和 ARM64 ALSA 库路径执行整体构建：
+构建脚本的 SDK 环境变量名为 `AX650_SDK_ROOT`（AX8850 板端也使用这个名称）。
+沿用第 2 节已核对版本的 SDK，指定 ARM64 ALSA 库路径执行整体构建：
 
 ```bash
-export AX8850_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+test -d "$AX650_SDK_ROOT/include" && test -d "$AX650_SDK_ROOT/lib"
 export ALSA_INCLUDE_DIR=/usr/include
 export ALSA_LIBRARY=/usr/lib/aarch64-linux-gnu/libasound.so
 CC=aarch64-linux-gnu-gcc \
@@ -209,7 +286,7 @@ CXX=aarch64-linux-gnu-g++ \
 
 ```bash
 export PATH="$HOME/opt/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/bin:$PATH"
-export AX8850_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
+export AX650_SDK_ROOT="$HOME/opt/ax650n_bsp_sdk/msp/out"
 export CROSS_SYSROOT=/path/to/aarch64-sysroot
 # ALSA_SYSROOT 默认继承 CROSS_SYSROOT；也可单独指向另一个含 ALSA 的 sysroot。
 CC=aarch64-none-linux-gnu-gcc \
@@ -220,7 +297,7 @@ CXX=aarch64-none-linux-gnu-g++ \
 Ubuntu 22.04/GCC 11 板端对应的命令形式为：
 
 ```bash
-export AX8850_SDK_ROOT=/path/to/sdk-synced-from-board-soc
+export AX650_SDK_ROOT=/path/to/sdk-synced-from-board-soc
 export CROSS_SYSROOT=/path/to/ubuntu-jammy-arm64-sysroot
 CC=aarch64-linux-gnu-gcc-11 \
 CXX=aarch64-linux-gnu-g++-11 \
@@ -238,6 +315,23 @@ test -x build/hojo-tts-resident
 file build/audio-pipeline build/run-alsa-apm build/qwen3-worker build/hojo-tts-resident
 ```
 
+完整构建成功后，脚本自动在项目根目录生成
+`build_release_<YYYYMMDD-HHMMSS>_<12位Git提交号>.tar.gz`，日期时间使用开发机本地时区。
+存在已跟踪文件的未提交修改时，Git 版本后附 `-dirty`。包内保留 `build/` 目录结构，
+包含上述五个生产产物及 `build/VERSION`（完整 commit、Git 版本和带时区的构建日期），
+不包含 CMake 缓存、第三方源码、模型和配置。源码与配置应使用对应版本。
+
+新包生成并通过可读性检查后，脚本会删除项目根目录中的历史 `build_release_*.tar.gz`
+及旧的 `build_release.tar.gz`，只保留本次生成的包。编译或打包失败时保留历史包；
+缺少 ALSA 或 AX SDK 导致组件跳过时不生成新包，也不清理历史包。
+
+在对应版本的项目根目录解压即可恢复预编译产物，再按第 4–5 节部署、配置并运行：
+
+```bash
+# 项目根目录仅保留最新预编译包
+tar -xzf build_release_*.tar.gz
+```
+
 部署前还应检查运行库版本要求。下面输出中的最高版本不能高于板端提供的版本：
 
 ```bash
@@ -251,7 +345,7 @@ strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 2>/dev/null \
 ```
 
 若 `build.sh` 显示 `skipped run-alsa-apm`，说明 ALSA 头文件或 `ALSA_LIBRARY` 不正确；
-若显示 `skipped AX8850 runtime components`，说明 `AX8850_SDK_ROOT` 下缺少 `include/` 或
+若显示 `skipped AX650 runtime components`，说明 `AX650_SDK_ROOT` 下缺少 `include/` 或
 `lib/`。这两种情况都不能部署完整实时链路。
 
 ### 4. 准备板端并部署
@@ -261,7 +355,7 @@ strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 2>/dev/null \
 
 ```bash
 apt-get update
-apt-get install -y alsa-utils ca-certificates curl lame
+apt-get install -y alsa-utils ca-certificates curl lame python3
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 uv --version
 ```
@@ -303,8 +397,8 @@ cd /opt/ax-audio-sdk
 ./scripts/start-ui.sh
 ```
 
-浏览器访问 `http://<板端IP>:7860` 配置完整音频链路，WebRTC APM 子页面默认使用
-`7861` 端口。至少根据 `arecord -l`、`aplay -l` 的结果核对采集/播放设备、通道数和
+浏览器访问 `http://<板端IP>:7870` 配置完整音频链路，WebRTC APM 子页面默认使用
+`7871` 端口。至少根据 `arecord -l`、`aplay -l` 的结果核对采集/播放设备、通道数和
 采样率，然后保存。配置写入 `config/sdk-config.yaml`，程序启动后修改不会实时生效，
 需要重启主管线。页面默认监听所有网卡且没有登录认证，仅应暴露在可信局域网中。
 
@@ -324,11 +418,11 @@ cd /opt/ax-audio-sdk
 
 | 脚本 | 执行位置 | 用途 |
 | --- | --- | --- |
-| `scripts/build.sh` | 开发机 | 交叉编译主管线、ALSA/APM 前端、FastEnhance、Qwen3 和 Hojo 生产组件，产物写入 `build/`。 |
+| `scripts/build.sh` | 开发机 | 交叉编译生产组件到 `build/`；完整构建后生成含日期和 Git 版本的预编译包，并清理历史发布包。 |
 | `scripts/deploy-ax8850.sh` | 开发机 | 通过 SSH 增量部署生产白名单，校验文件并在板端执行依赖检查。 |
 | `scripts/migrate-config.sh` | 开发机或 AX8850 板端 | 保留已有板端配置，只为旧版本补齐缺失的 KWS 配置段并创建备份。 |
 | `scripts/check-target-deps.sh` | AX8850 板端 | 检查生产二进制、动态库、全部模型、`uv`、ALSA、播放工具和 MP3 编码器。 |
-| `scripts/start-ui.sh` | 开发机或 AX8850 板端 | 启动主配置页（默认 `7860`）和 APM 配置页（默认 `7861`）；只修改 YAML，不启动音频链路。 |
+| `scripts/start-ui.sh` | 开发机或 AX8850 板端 | 启动主配置页（默认 `7870`）和 APM 配置页（默认 `7871`）；只修改 YAML，不启动音频链路。 |
 | `scripts/run-target.sh` | AX8850 板端 | 设置运行时动态库路径，启动 C++ 主管线及状态页（默认 `7862`），并统一处理退出信号。 |
 | `scripts/clean-history.sh` | AX8850 板端 | 删除配置所指向的转录、LLM、TTS、临时音频、MP3 和说话人历史；不删除模型与配置。 |
 
@@ -472,8 +566,24 @@ APM 的 reverse stream。Hojo 的 24 kHz 单声道输出会转成 48 kHz；开�
 ```bash
 arecord -l                         # 查看采集卡和设备编号
 aplay -l                           # 查看播放卡和设备编号
-arecord -D hw:2,0 -f S16_LE -r 48000 -c 1 -d 3 /tmp/uac-test.wav
+# 将 <采集声卡名> / <播放声卡名> 替换为上面输出中 card N: 后、方括号前的标识。
+arecord -D 'hw:CARD=<采集声卡名>,DEV=0' -f S16_LE -r 48000 -c 1 -d 3 /tmp/uac-test.wav
+aplay -D 'hw:CARD=<播放声卡名>,DEV=0' /tmp/uac-test.wav
 ```
+
+数字卡号会随 USB 枚举顺序变化，例如重启后从 card 4 变为 card 3。建议在配置中也按
+声卡名绑定：`audio.capture.device: hw:CARD=<采集声卡名>,DEV=0`、
+`audio.playback.device: hw:CARD=<播放声卡名>,DEV=0`。设备号 `DEV=0` 也需按实际结果修改；
+有多个同名 USB 设备时，需先核对 ALSA 标识是否能区分它们。
+
+若播放音量过低，先查看声卡混音控件；存在 `DAC VOLUME` 时可按已验证设备的设置调整：
+
+```bash
+amixer -c '<播放声卡名>' scontrols
+amixer -c '<播放声卡名>' sset 'DAC VOLUME' 150
+```
+
+`DAC VOLUME` 的名称和取值范围依声卡而定，`150` 是已验证设备的参考值。
 
 根据实际枚举结果修改 `config/sdk-config.yaml` 中的
 `audio.capture.device`、`audio.capture.channels` 和采样率；若设备对精确硬件参数
@@ -486,14 +596,15 @@ arecord -D hw:2,0 -f S16_LE -r 48000 -c 1 -d 3 /tmp/uac-test.wav
 ### 主机侧准备
 
 - Linux 主机、CMake、Make 和与板端固件 ABI 匹配的 AArch64 交叉编译器（脚本默认
-  名称为 `aarch64-linux-gnu-g++`；AX8850N BSP `v1.45.0_p39` 推荐 GCC 9.2-2019.12）。
+  名称为 `aarch64-linux-gnu-g++`；已验证的 Ubuntu 22.04 板端使用 GCC 11.x，
+  BSP 推荐的 GCC 9.2 需按配套固件与用户态另行核对）。
 - 目标板 sysroot 中的 ALSA 头文件和 ARM64 `libasound.so`，用于生成
   `run-alsa-apm`；不能链接开发机的 x86_64 ALSA 库。
 - AX8850 Board SDK（包含 `include/`、`lib/`），用于生成 FastEnhance、Qwen3 和
   Hojo 运行组件。
 
 APM 预编译库已位于 `driver/apm`。没有 ALSA sysroot 时，构建脚本会跳过
-`run-alsa-apm`；没有有效 `AX8850_SDK_ROOT` 时会跳过 AX8850 运行组件。两种情况都只是
+`run-alsa-apm`；没有有效 `AX650_SDK_ROOT` 时会跳过 AX8850 运行组件。两种情况都只是
 部分构建，不能视为完整实时链路编译成功。
 
 ### Hojo 专用 ax-llm（强制版本）
@@ -548,14 +659,14 @@ git -C driver/tts/hojo/third_party/ax-llm status --short
 cd ax-audio-sdk
 
 # 推荐显式指定板端 SDK、完整 sysroot 和 C/C++ 编译器；版本以板端用户态为准
-AX8850_SDK_ROOT=/path/to/ax650-board-sdk \
+AX650_SDK_ROOT=/path/to/ax650-board-sdk \
 CROSS_SYSROOT=/path/to/aarch64-sysroot \
 CC=aarch64-linux-gnu-gcc-11 \
 CXX=aarch64-linux-gnu-g++-11 \
 ./scripts/build.sh
 
 # 若编译器自带且能自动定位 sysroot，只需另行提供 ALSA sysroot
-AX8850_SDK_ROOT=/path/to/ax650-board-sdk \
+AX650_SDK_ROOT=/path/to/ax650-board-sdk \
 ALSA_SYSROOT=/path/to/aarch64-sysroot-with-alsa \
 CC=aarch64-none-linux-gnu-gcc \
 CXX=aarch64-none-linux-gnu-g++ \
@@ -573,7 +684,7 @@ CXX=aarch64-none-linux-gnu-g++ \
 FastEnhance 也可以单独重建：
 
 ```bash
-AX8850_SDK_ROOT=/path/to/ax650-board-sdk \
+AX650_SDK_ROOT=/path/to/ax650-board-sdk \
 CROSS_SYSROOT=/path/to/aarch64-sysroot \
 CXX=aarch64-linux-gnu-g++ ./driver/ns/build-fastenhance.sh
 ```
@@ -783,34 +894,41 @@ TTS 切片默认最少 20 字或 10 个英文单词，在达到阈值后的标�
 
 ```bash
 cd ax-audio-sdk
-uv sync
+uv sync --locked
 ./scripts/start-ui.sh
 ```
 
 配置页面只使用标准库和两个第三方包：`gradio`、`pyyaml`（另含 `httpx` 走 SOCKS
 代理时需要的 `socksio`），均已通过 `uv add` 写入 `pyproject.toml` 并锁定在
-`uv.lock`。迁移环境时复制这两个文件后执行 `uv sync` 即可复现最小可运行环境。
+`uv.lock`。迁移环境时复制这两个文件后执行 `uv sync --locked` 即可复现最小可运行环境。
 
 `scripts/deploy-ax8850.sh` 会把配置页面所需文件按主机端相同的相对目录部署到板端
 （`scripts/start-ui.sh`、`pyproject.toml`、`uv.lock`、`.python-version`、
 `framework/configui/apm-config-ui.py`、`framework/configui/sdk-config-ui.py`、
 `framework/configui/runtime-ui.py`）。
-板端只需安装 `uv`，首次执行一次 `uv sync`（aarch64 会自动下载对应 wheel），
+板端按「准备板端并部署」安装 `uv` 和系统 `python3`，首次执行一次
+`uv sync --locked`（aarch64 会自动下载对应 wheel），
 之后在板端工程根目录运行 `./scripts/start-ui.sh` 即可打开配置页面。
 
-默认页面：
+通过脚本启动时的默认页面：
 
-- 主配置页：`http://127.0.0.1:7860`
-- APM 配置页：`http://127.0.0.1:7861`
+- 主配置页：`http://127.0.0.1:7870`
+- APM 配置页：`http://127.0.0.1:7871`
 - 运行状态页：`http://127.0.0.1:7862`（由 `run-target.sh` 自动启动）
+
+主配置页和 APM 页端口可通过环境变量修改，例如：
+
+```bash
+MAIN_PORT=7880 APM_PORT=7881 ./scripts/start-ui.sh
+```
 
 也可以分别启动并指定端口：
 
 ```bash
 uv run python framework/configui/sdk-config-ui.py \
-  --config config/sdk-config.yaml --host 0.0.0.0 --port 7860 --apm-port 7861
+  --config config/sdk-config.yaml --host 0.0.0.0 --port 7870 --apm-port 7871
 uv run python framework/configui/apm-config-ui.py \
-  --config config/sdk-config.yaml --host 0.0.0.0 --port 7861
+  --config config/sdk-config.yaml --host 0.0.0.0 --port 7871
 ```
 
 页面只编辑同一个 YAML 文件的相应字段，并保留其他配置。保存后必须重启板端管线。
@@ -865,6 +983,9 @@ DRY_RUN=1 ./scripts/clean-history.sh
 
 ## 10. 已知限制与后续方向
 
+- `kws.enabled` 默认开启。当前示例权重在安静环境下仍会持续输出识别结果（部署评估实测约
+  15 次/分），仅用于验证链路集成。仅需 ASR/LLM/TTS 时可设 `kws.enabled: false`；
+  需要评估时建议 `kws.threshold: 0.95`、`kws.stable_frames: 5`，这些设置不能替代充分训练。
 - `output.max_mp3_storage_mb` 已纳入配置解析，但当前结果 worker 不会自动按容量淘汰旧 MP3；
   可通过 `scripts/clean-history.sh` 手动清理输出目录。
 - SenseVoice、Qwen3 与 Hojo 共用 NPU2，按 Cell 串行推理。CPU 预分词可以与 Qwen 并行，

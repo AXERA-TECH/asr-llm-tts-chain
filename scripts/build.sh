@@ -19,6 +19,13 @@ if [[ -z "${CXX_PATH}" || -z "${CC_PATH}" ]]; then
     echo "Cross compiler not found: CC=${CC}, CXX=${CXX}" >&2
     exit 1
 fi
+# Capture the source version before compiling; tracked local edits are marked.
+BUILD_COMMIT="$(git -C "${SDK_DIR}" rev-parse HEAD)"
+BUILD_GIT_VERSION="$(git -C "${SDK_DIR}" rev-parse --short=12 HEAD)"
+if [[ -n "$(git -C "${SDK_DIR}" status --porcelain --untracked-files=no)" ]]; then
+    BUILD_GIT_VERSION+="-dirty"
+fi
+RELEASE_COMPLETE=1
 CROSS_SYSROOT="${CROSS_SYSROOT:-}"
 CROSS_FLAGS=()
 CMAKE_SYSROOT_ARGS=()
@@ -127,6 +134,7 @@ if [[ -r "${ALSA_INCLUDE_DIR}/alsa/asoundlib.h" && -r "${ALSA_LIBRARY}" ]]; then
 else
     echo "ALSA headers/library not found; skipped run-alsa-apm." >&2
     echo "Set ALSA_INCLUDE_DIR and ALSA_LIBRARY, or ALSA_SYSROOT." >&2
+    RELEASE_COMPLETE=0
 fi
 
 if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
@@ -159,6 +167,50 @@ if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
     echo "Build done: ${BUILD_DIR}/hojo-tts-resident"
 else
     echo "AX650_SDK_ROOT is unavailable; skipped AX650 runtime components." >&2
+    RELEASE_COMPLETE=0
+fi
+
+# Publish only a complete production build. Never package stale outputs from a
+# skipped component, or include CMake caches and downloaded third-party sources.
+if [[ "${RELEASE_COMPLETE}" == 1 ]]; then
+    (
+        RELEASE_FILES=(audio-pipeline run-alsa-apm libfastenhance.so qwen3-worker hojo-tts-resident)
+        for artifact in "${RELEASE_FILES[@]}"; do
+            if [[ ! -s "${BUILD_DIR}/${artifact}" ]]; then
+                echo "Cannot package release: missing or empty build/${artifact}" >&2
+                exit 1
+            fi
+            if [[ "${artifact}" != libfastenhance.so && ! -x "${BUILD_DIR}/${artifact}" ]]; then
+                echo "Cannot package release: build/${artifact} is not executable" >&2
+                exit 1
+            fi
+        done
+
+        BUILD_DATE="$(date '+%Y%m%d-%H%M%S')"
+        BUILD_TIMESTAMP="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+        cat > "${BUILD_DIR}/VERSION" <<EOF
+commit=${BUILD_COMMIT}
+git_version=${BUILD_GIT_VERSION}
+build_date=${BUILD_TIMESTAMP}
+EOF
+        RELEASE_FILES+=(VERSION)
+        RELEASE_ARCHIVE="${SDK_DIR}/build_release_${BUILD_DATE}_${BUILD_GIT_VERSION}.tar.gz"
+        RELEASE_TMP="$(mktemp "${SDK_DIR}/.build-release.XXXXXX")"
+        trap 'rm -f -- "${RELEASE_TMP}"' EXIT
+        tar -czf "${RELEASE_TMP}" -C "${SDK_DIR}" "${RELEASE_FILES[@]/#/build/}"
+        tar -tzf "${RELEASE_TMP}" > /dev/null
+        mv -f -- "${RELEASE_TMP}" "${RELEASE_ARCHIVE}"
+        echo "Release packaged: ${RELEASE_ARCHIVE}"
+
+        # Remove only this project's release archives after the new one is valid.
+        for old_archive in "${SDK_DIR}/build_release.tar.gz" "${SDK_DIR}"/build_release_*.tar.gz; do
+            [[ -f "${old_archive}" && "${old_archive}" != "${RELEASE_ARCHIVE}" ]] || continue
+            rm -- "${old_archive}"
+            echo "Removed historical release: ${old_archive}"
+        done
+    )
+else
+    echo "Incomplete build: release packaging skipped; historical archives preserved." >&2
 fi
 echo "在目标平台运行时请指定库的路径，例如："
 echo "  ./scripts/run-target.sh"
